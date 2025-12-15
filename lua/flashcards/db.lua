@@ -133,6 +133,20 @@ function M.close()
     end
 end
 
+--- Safe eval that always returns a table
+--- sqlite.lua's eval returns true for successful queries with no results
+---@param query string SQL query
+---@return table Results table (empty if no results)
+local function safe_eval(query)
+    local d = M.get()
+    local result = d:eval(query)
+    -- eval returns true for success with no results, or a table of results
+    if type(result) == "table" then
+        return result
+    end
+    return {}
+end
+
 -- =============================================================================
 -- Card Operations
 -- =============================================================================
@@ -146,10 +160,10 @@ function M.upsert_card(card)
 
     -- Check if card exists using raw SQL (more reliable)
     local card_id_escaped = card.id:gsub("'", "''")
-    local existing = d:eval(string.format(
+    local existing = safe_eval(string.format(
         "SELECT id FROM cards WHERE id = '%s' LIMIT 1",
         card_id_escaped
-    )) or {}
+    ))
 
     if #existing > 0 then
         -- Update existing card
@@ -208,13 +222,12 @@ end
 ---@param card_id string Card ID
 ---@return table|nil Card with state
 function M.get_card(card_id)
-    local d = M.get()
     local card_id_escaped = card_id:gsub("'", "''")
 
-    local cards = d:eval(string.format(
+    local cards = safe_eval(string.format(
         "SELECT * FROM cards WHERE id = '%s' LIMIT 1",
         card_id_escaped
-    )) or {}
+    ))
 
     if #cards == 0 then
         return nil
@@ -223,10 +236,10 @@ function M.get_card(card_id)
     local card = cards[1]
 
     -- Get state
-    local states = d:eval(string.format(
+    local states = safe_eval(string.format(
         "SELECT * FROM card_states WHERE card_id = '%s' LIMIT 1",
         card_id_escaped
-    )) or {}
+    ))
 
     if #states > 0 then
         card.state = states[1]
@@ -241,22 +254,18 @@ end
 --- Get all cards
 ---@return table List of cards
 function M.get_all_cards()
-    local d = M.get()
-    local result = d:eval("SELECT * FROM cards")
-    return result or {}
+    return safe_eval("SELECT * FROM cards")
 end
 
 --- Get cards from a specific file
 ---@param file_path string File path
 ---@return table List of cards
 function M.get_cards_by_file(file_path)
-    local d = M.get()
     local file_path_escaped = file_path:gsub("'", "''")
-    local result = d:eval(string.format(
+    return safe_eval(string.format(
         "SELECT * FROM cards WHERE file_path = '%s'",
         file_path_escaped
     ))
-    return result or {}
 end
 
 --- Delete all cards from a specific file
@@ -281,13 +290,12 @@ end
 ---@param card_id string Card ID
 ---@return table|nil Card state
 function M.get_card_state(card_id)
-    local d = M.get()
     local card_id_escaped = card_id:gsub("'", "''")
 
-    local states = d:eval(string.format(
+    local states = safe_eval(string.format(
         "SELECT * FROM card_states WHERE card_id = '%s' LIMIT 1",
         card_id_escaped
-    )) or {}
+    ))
 
     if #states > 0 then
         return states[1]
@@ -329,7 +337,6 @@ end
 ---@return table List of due cards with states
 function M.get_due_cards(opts)
     opts = opts or {}
-    local d = M.get()
     local now = utils.now()
 
     -- Build query parts
@@ -365,16 +372,13 @@ function M.get_due_cards(opts)
         query = query .. string.format(" LIMIT %d", opts.limit)
     end
 
-    local result = d:eval(query)
-    return result or {}
+    return safe_eval(query)
 end
 
 --- Get new cards for today
 ---@param limit integer|nil Maximum cards to return
 ---@return table List of new cards
 function M.get_new_cards(limit)
-    local d = M.get()
-
     local query = "SELECT c.*, cs.state, cs.stability, cs.difficulty, cs.due_date "
         .. "FROM cards c "
         .. "JOIN card_states cs ON c.id = cs.card_id "
@@ -385,16 +389,13 @@ function M.get_new_cards(limit)
         query = query .. string.format(" LIMIT %d", limit)
     end
 
-    local result = d:eval(query)
-    return result or {}
+    return safe_eval(query)
 end
 
 --- Count cards by state
 ---@return table Counts {new, learning, review, relearning, total}
 function M.count_by_state()
-    local d = M.get()
-
-    local results = d:eval("SELECT state, COUNT(*) as count FROM card_states GROUP BY state") or {}
+    local results = safe_eval("SELECT state, COUNT(*) as count FROM card_states GROUP BY state")
 
     local counts = { new = 0, learning = 0, review = 0, relearning = 0, total = 0 }
     for _, row in ipairs(results) do
@@ -410,7 +411,6 @@ end
 --- Count due cards
 ---@return table Counts {new, learning, review, total}
 function M.count_due()
-    local d = M.get()
     local now = utils.now()
 
     local query = "SELECT "
@@ -421,7 +421,7 @@ function M.count_due()
         .. "FROM card_states "
         .. string.format("WHERE due_date <= %d", now)
 
-    local results = d:eval(query) or {}
+    local results = safe_eval(query)
 
     return results[1] or { new = 0, learning = 0, review = 0, total = 0 }
 end
@@ -455,13 +455,12 @@ end
 ---@param card_id string Card ID
 ---@return table List of tags
 function M.get_card_tags(card_id)
-    local d = M.get()
     local card_id_escaped = card_id:gsub("'", "''")
 
-    local rows = d:eval(string.format(
+    local rows = safe_eval(string.format(
         "SELECT tag FROM card_tags WHERE card_id = '%s'",
         card_id_escaped
-    )) or {}
+    ))
 
     local tags = {}
     for _, row in ipairs(rows) do
@@ -473,9 +472,7 @@ end
 --- Get all unique tags
 ---@return table List of unique tags
 function M.get_all_tags()
-    local d = M.get()
-
-    local results = d:eval("SELECT DISTINCT tag FROM card_tags ORDER BY tag") or {}
+    local results = safe_eval("SELECT DISTINCT tag FROM card_tags ORDER BY tag")
 
     local tags = {}
     for _, row in ipairs(results) do
@@ -488,7 +485,6 @@ end
 ---@param tag string Tag to filter by
 ---@return table List of cards
 function M.get_cards_by_tag(tag)
-    local d = M.get()
     local tag_escaped = tag:gsub("'", "''")
 
     local query = "SELECT DISTINCT c.*, cs.state, cs.stability, cs.difficulty, cs.due_date "
@@ -498,21 +494,18 @@ function M.get_cards_by_tag(tag)
         .. string.format("WHERE ct.tag = '%s' OR ct.tag LIKE '%s/%%' ", tag_escaped, tag_escaped)
         .. "ORDER BY c.file_path, c.line_number"
 
-    local result = d:eval(query)
-    return result or {}
+    return safe_eval(query)
 end
 
 --- Count cards per tag
 ---@return table Map of tag -> count
 function M.count_by_tag()
-    local d = M.get()
-
     local query = "SELECT tag, COUNT(*) as count "
         .. "FROM card_tags "
         .. "GROUP BY tag "
         .. "ORDER BY count DESC"
 
-    local results = d:eval(query) or {}
+    local results = safe_eval(query)
 
     local counts = {}
     for _, row in ipairs(results) do
@@ -560,8 +553,6 @@ end
 ---@param limit integer|nil Maximum reviews to return
 ---@return table List of reviews
 function M.get_reviews(card_id, limit)
-    local d = M.get()
-
     local query = "SELECT * FROM reviews "
         .. string.format("WHERE card_id = '%s' ", card_id:gsub("'", "''"))
         .. "ORDER BY reviewed_at DESC"
@@ -570,8 +561,7 @@ function M.get_reviews(card_id, limit)
         query = query .. string.format(" LIMIT %d", limit)
     end
 
-    local result = d:eval(query)
-    return result or {}
+    return safe_eval(query)
 end
 
 --- Update daily statistics
@@ -581,10 +571,10 @@ function M.update_daily_stats(review)
     local date = os.date("%Y-%m-%d", review.reviewed_at or utils.now())
 
     -- Check if entry exists
-    local existing = d:eval(string.format(
+    local existing = safe_eval(string.format(
         "SELECT * FROM daily_stats WHERE date = '%s' LIMIT 1",
         date
-    )) or {}
+    ))
 
     local is_new = review.state_before == "new"
 
@@ -621,21 +611,16 @@ end
 ---@param to_date string End date (YYYY-MM-DD)
 ---@return table List of daily stats
 function M.get_daily_stats(from_date, to_date)
-    local d = M.get()
-
     local query = "SELECT * FROM daily_stats "
         .. string.format("WHERE date >= '%s' AND date <= '%s' ", from_date, to_date)
         .. "ORDER BY date ASC"
 
-    local result = d:eval(query)
-    return result or {}
+    return safe_eval(query)
 end
 
 --- Get overall statistics
 ---@return table Statistics summary
 function M.get_stats()
-    local d = M.get()
-
     local card_counts = M.count_by_state()
     local due_counts = M.count_due()
 
@@ -646,14 +631,14 @@ function M.get_stats()
         .. "SUM(CASE WHEN rating = 2 THEN 1 ELSE 0 END) as correct, "
         .. "SUM(CASE WHEN rating = 1 THEN 1 ELSE 0 END) as wrong "
         .. "FROM reviews"
-    local review_results = d:eval(review_query) or {}
+    local review_results = safe_eval(review_query)
     local review_stats = review_results[1] or { total_reviews = 0, avg_time_ms = 0, correct = 0, wrong = 0 }
 
     -- Get streak (consecutive days with reviews)
     local streak_query = "SELECT date FROM daily_stats "
         .. "WHERE review_count > 0 OR new_count > 0 "
         .. "ORDER BY date DESC"
-    local dates = d:eval(streak_query) or {}
+    local dates = safe_eval(streak_query)
 
     local streak = 0
     local today = os.date("%Y-%m-%d")
@@ -699,8 +684,7 @@ end
 --- Mark orphaned cards (cards whose files no longer exist)
 ---@return table List of orphaned card IDs
 function M.find_orphaned_cards()
-    local d = M.get()
-    local cards = d:eval("SELECT id, file_path FROM cards") or {}
+    local cards = safe_eval("SELECT id, file_path FROM cards")
     local orphaned = {}
 
     for _, card in ipairs(cards) do
