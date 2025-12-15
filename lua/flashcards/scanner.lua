@@ -179,6 +179,9 @@ end
 function M.scan_file(file_path, opts)
     opts = opts or {}
 
+    -- Normalize file path for consistent storage/lookup
+    file_path = utils.normalize_path(file_path)
+
     local results = {
         cards_found = 0,
         cards_added = 0,
@@ -240,7 +243,7 @@ function M.scan_file(file_path, opts)
         -- Track found ID
         table.insert(results.found_ids, card.id)
 
-        -- Check if card exists
+        -- Check if card exists (by ID in this file's cards)
         if existing_map[card.id] then
             -- Check if content changed
             local ex = existing_map[card.id]
@@ -250,9 +253,17 @@ function M.scan_file(file_path, opts)
             end
             existing_map[card.id] = nil -- Mark as processed
         else
-            -- New card
-            db.upsert_card(card)
-            results.cards_added = results.cards_added + 1
+            -- Check if card exists globally by ID (handles path changes)
+            local existing_by_id = db.get_card(card.id)
+            if existing_by_id then
+                -- Card exists but was stored with different path, update it
+                db.upsert_card(card)
+                results.cards_updated = results.cards_updated + 1
+            else
+                -- Truly new card
+                db.upsert_card(card)
+                results.cards_added = results.cards_added + 1
+            end
         end
 
         ::continue::

@@ -36,6 +36,13 @@ function M.strip_card_id(text)
     return text:gsub("%s*<!%-%-%s*fc:[%w]+%s*%-%->%s*", " "):gsub("^%s+", ""):gsub("%s+$", "")
 end
 
+--- Normalize file path to absolute form for consistent storage/lookup
+---@param path string File path
+---@return string Normalized absolute path
+function M.normalize_path(path)
+    return vim.fn.fnamemodify(path, ":p")
+end
+
 --- Legacy: Generate a stable card ID from content (for migration)
 ---@param file_path string Source file path
 ---@param front string Card front content
