@@ -167,10 +167,10 @@ Running `:FlashcardsReview` without arguments opens a tag picker that shows:
 
 ```
 Select tag to review:
-> All cards - 5 due (20 total)
-  #math - 3 due (10 total)
-  #programming - 2 due (8 total)
-  #history - 0 due (5 total)
+> All cards (5 cards due)
+  #math (3 cards due)
+  #programming (2 cards due)
+  #history (0 cards due)
 ```
 
 Use Tab completion with `:FlashcardsReview #` to quickly filter by tag.

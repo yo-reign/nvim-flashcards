@@ -164,9 +164,9 @@ function M.parse_fenced(file_path, content, opts)
                 local current = lines_arr[i]
 
                 -- Check for closing ::: with optional tags
-                local close_match, tags_str = current:match("^%s*:::%s*(.*)$")
-                if close_match ~= nil then
-                    -- Extract tags from closing line
+                if current:match("^%s*:::") then
+                    -- Extract everything after ::: as potential tags
+                    local tags_str = current:match("^%s*:::%s*(.*)$")
                     if tags_str and #tags_str > 0 then
                         closing_tags = utils.parse_tags(tags_str)
                     end

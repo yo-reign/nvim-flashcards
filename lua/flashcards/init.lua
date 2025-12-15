@@ -187,9 +187,9 @@ function M._show_tag_picker()
     local formatted = {}
     for _, opt in ipairs(options) do
         if opt.due > 0 then
-            table.insert(formatted, string.format("%s - %d due (%d total)", opt.label, opt.due, opt.total))
+            table.insert(formatted, string.format("%s (%d cards due)", opt.label, opt.due))
         else
-            table.insert(formatted, string.format("%s - 0 due (%d total)", opt.label, opt.total))
+            table.insert(formatted, string.format("%s (0 cards due)", opt.label))
         end
     end
 
