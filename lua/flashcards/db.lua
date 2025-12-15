@@ -119,46 +119,43 @@ function M.upsert_card(card)
     local now = utils.now()
     local d = M.get()
 
-    -- Check if card exists
-    local existing = d.cards:where({ id = card.id }) or {}
+    -- Check if card exists using raw SQL (more reliable)
+    local card_id_escaped = card.id:gsub("'", "''")
+    local existing = d:eval(string.format(
+        "SELECT id FROM cards WHERE id = '%s' LIMIT 1",
+        card_id_escaped
+    )) or {}
 
     if #existing > 0 then
         -- Update existing card
-        d.cards:update({
-            where = { id = card.id },
-            set = {
-                file_path = card.file_path,
-                line_number = card.line_number,
-                front = card.front,
-                back = card.back,
-                updated_at = now,
-            },
-        })
+        d:execute(string.format(
+            "UPDATE cards SET file_path = '%s', line_number = %d, front = '%s', back = '%s', updated_at = %d WHERE id = '%s'",
+            card.file_path:gsub("'", "''"),
+            card.line_number or 0,
+            card.front:gsub("'", "''"),
+            card.back:gsub("'", "''"),
+            now,
+            card_id_escaped
+        ))
     else
         -- Insert new card
-        d.cards:insert({
-            id = card.id,
-            file_path = card.file_path,
-            line_number = card.line_number,
-            front = card.front,
-            back = card.back,
-            created_at = now,
-            updated_at = now,
-        })
+        d:execute(string.format(
+            "INSERT INTO cards (id, file_path, line_number, front, back, created_at, updated_at) VALUES ('%s', '%s', %d, '%s', '%s', %d, %d)",
+            card_id_escaped,
+            card.file_path:gsub("'", "''"),
+            card.line_number or 0,
+            card.front:gsub("'", "''"),
+            card.back:gsub("'", "''"),
+            now,
+            now
+        ))
 
         -- Create initial state
-        d.card_states:insert({
-            card_id = card.id,
-            state = "new",
-            stability = 0,
-            difficulty = 0,
-            elapsed_days = 0,
-            scheduled_days = 0,
-            due_date = now, -- Due immediately
-            last_review = nil,
-            reps = 0,
-            lapses = 0,
-        })
+        d:execute(string.format(
+            "INSERT INTO card_states (card_id, state, stability, difficulty, elapsed_days, scheduled_days, due_date, reps, lapses, learning_step) VALUES ('%s', 'new', 0, 0, 0, 0, %d, 0, 0, 0)",
+            card_id_escaped,
+            now
+        ))
     end
 
     -- Update tags
@@ -172,11 +169,12 @@ end
 ---@return boolean Success
 function M.delete_card(card_id)
     local d = M.get()
+    local card_id_escaped = card_id:gsub("'", "''")
 
-    d.card_tags:remove({ card_id = card_id })
-    d.reviews:remove({ card_id = card_id })
-    d.card_states:remove({ card_id = card_id })
-    d.cards:remove({ id = card_id })
+    d:execute(string.format("DELETE FROM card_tags WHERE card_id = '%s'", card_id_escaped))
+    d:execute(string.format("DELETE FROM reviews WHERE card_id = '%s'", card_id_escaped))
+    d:execute(string.format("DELETE FROM card_states WHERE card_id = '%s'", card_id_escaped))
+    d:execute(string.format("DELETE FROM cards WHERE id = '%s'", card_id_escaped))
 
     return true
 end
@@ -186,8 +184,13 @@ end
 ---@return table|nil Card with state
 function M.get_card(card_id)
     local d = M.get()
+    local card_id_escaped = card_id:gsub("'", "''")
 
-    local cards = d.cards:where({ id = card_id }) or {}
+    local cards = d:eval(string.format(
+        "SELECT * FROM cards WHERE id = '%s' LIMIT 1",
+        card_id_escaped
+    )) or {}
+
     if #cards == 0 then
         return nil
     end
@@ -195,7 +198,11 @@ function M.get_card(card_id)
     local card = cards[1]
 
     -- Get state
-    local states = d.card_states:where({ card_id = card_id }) or {}
+    local states = d:eval(string.format(
+        "SELECT * FROM card_states WHERE card_id = '%s' LIMIT 1",
+        card_id_escaped
+    )) or {}
+
     if #states > 0 then
         card.state = states[1]
     end
@@ -210,7 +217,7 @@ end
 ---@return table List of cards
 function M.get_all_cards()
     local d = M.get()
-    local result = d.cards:get()
+    local result = d:eval("SELECT * FROM cards")
     return result or {}
 end
 
@@ -219,7 +226,11 @@ end
 ---@return table List of cards
 function M.get_cards_by_file(file_path)
     local d = M.get()
-    local result = d.cards:where({ file_path = file_path })
+    local file_path_escaped = file_path:gsub("'", "''")
+    local result = d:eval(string.format(
+        "SELECT * FROM cards WHERE file_path = '%s'",
+        file_path_escaped
+    ))
     return result or {}
 end
 
@@ -246,8 +257,14 @@ end
 ---@return table|nil Card state
 function M.get_card_state(card_id)
     local d = M.get()
-    local states = d.card_states:where({ card_id = card_id })
-    if states and #states > 0 then
+    local card_id_escaped = card_id:gsub("'", "''")
+
+    local states = d:eval(string.format(
+        "SELECT * FROM card_states WHERE card_id = '%s' LIMIT 1",
+        card_id_escaped
+    )) or {}
+
+    if #states > 0 then
         return states[1]
     end
     return nil
@@ -259,22 +276,25 @@ end
 ---@return boolean Success
 function M.update_card_state(card_id, state)
     local d = M.get()
+    local card_id_escaped = card_id:gsub("'", "''")
 
-    d.card_states:update({
-        where = { card_id = card_id },
-        set = {
-            state = state.state,
-            stability = state.stability,
-            difficulty = state.difficulty,
-            elapsed_days = state.elapsed_days,
-            scheduled_days = state.scheduled_days,
-            due_date = state.due_date,
-            last_review = state.last_review,
-            reps = state.reps,
-            lapses = state.lapses,
-            learning_step = state.learning_step or 0,
-        },
-    })
+    d:execute(string.format(
+        "UPDATE card_states SET state = '%s', stability = %f, difficulty = %f, "
+        .. "elapsed_days = %d, scheduled_days = %d, due_date = %d, "
+        .. "last_review = %s, reps = %d, lapses = %d, learning_step = %d "
+        .. "WHERE card_id = '%s'",
+        state.state,
+        state.stability or 0,
+        state.difficulty or 0,
+        state.elapsed_days or 0,
+        state.scheduled_days or 0,
+        state.due_date or 0,
+        state.last_review and tostring(state.last_review) or "NULL",
+        state.reps or 0,
+        state.lapses or 0,
+        state.learning_step or 0,
+        card_id_escaped
+    ))
 
     return true
 end
@@ -390,16 +410,19 @@ end
 ---@param tags table List of tags
 function M.set_card_tags(card_id, tags)
     local d = M.get()
+    local card_id_escaped = card_id:gsub("'", "''")
 
     -- Remove existing tags
-    d.card_tags:remove({ card_id = card_id })
+    d:execute(string.format("DELETE FROM card_tags WHERE card_id = '%s'", card_id_escaped))
 
     -- Insert new tags
     for _, tag in ipairs(tags) do
-        d.card_tags:insert({
-            card_id = card_id,
-            tag = tag,
-        })
+        local tag_escaped = tag:gsub("'", "''")
+        d:execute(string.format(
+            "INSERT INTO card_tags (card_id, tag) VALUES ('%s', '%s')",
+            card_id_escaped,
+            tag_escaped
+        ))
     end
 end
 
@@ -408,7 +431,12 @@ end
 ---@return table List of tags
 function M.get_card_tags(card_id)
     local d = M.get()
-    local rows = d.card_tags:where({ card_id = card_id }) or {}
+    local card_id_escaped = card_id:gsub("'", "''")
+
+    local rows = d:eval(string.format(
+        "SELECT tag FROM card_tags WHERE card_id = '%s'",
+        card_id_escaped
+    )) or {}
 
     local tags = {}
     for _, row in ipairs(rows) do
@@ -477,19 +505,24 @@ end
 ---@return boolean Success
 function M.add_review(review)
     local d = M.get()
+    local card_id_escaped = review.card_id:gsub("'", "''")
+    local reviewed_at = review.reviewed_at or utils.now()
 
-    d.reviews:insert({
-        card_id = review.card_id,
-        rating = review.rating,
-        reviewed_at = review.reviewed_at or utils.now(),
-        elapsed_ms = review.elapsed_ms,
-        stability_before = review.stability_before,
-        stability_after = review.stability_after,
-        difficulty_before = review.difficulty_before,
-        difficulty_after = review.difficulty_after,
-        state_before = review.state_before,
-        state_after = review.state_after,
-    })
+    d:execute(string.format(
+        "INSERT INTO reviews (card_id, rating, reviewed_at, elapsed_ms, "
+        .. "stability_before, stability_after, difficulty_before, difficulty_after, "
+        .. "state_before, state_after) VALUES ('%s', %d, %d, %s, %s, %s, %s, %s, '%s', '%s')",
+        card_id_escaped,
+        review.rating or 0,
+        reviewed_at,
+        review.elapsed_ms and tostring(review.elapsed_ms) or "NULL",
+        review.stability_before and tostring(review.stability_before) or "NULL",
+        review.stability_after and tostring(review.stability_after) or "NULL",
+        review.difficulty_before and tostring(review.difficulty_before) or "NULL",
+        review.difficulty_after and tostring(review.difficulty_after) or "NULL",
+        review.state_before or "new",
+        review.state_after or "new"
+    ))
 
     -- Update daily stats
     M.update_daily_stats(review)
@@ -523,35 +556,38 @@ function M.update_daily_stats(review)
     local date = os.date("%Y-%m-%d", review.reviewed_at or utils.now())
 
     -- Check if entry exists
-    local existing = d.daily_stats:where({ date = date }) or {}
+    local existing = d:eval(string.format(
+        "SELECT * FROM daily_stats WHERE date = '%s' LIMIT 1",
+        date
+    )) or {}
 
-    -- Binary rating: 1=Wrong, 2=Correct
-    local rating_field = review.rating == 2 and "correct_count" or "wrong_count"
+    local is_new = review.state_before == "new"
 
     if #existing > 0 then
         local stats = existing[1]
-        local is_new = review.state_before == "new"
+        local new_count = (stats.new_count or 0) + (is_new and 1 or 0)
+        local review_count = (stats.review_count or 0) + (is_new and 0 or 1)
+        local wrong_count = (stats.wrong_count or 0) + (review.rating == 1 and 1 or 0)
+        local correct_count = (stats.correct_count or 0) + (review.rating == 2 and 1 or 0)
+        local total_time_ms = (stats.total_time_ms or 0) + (review.elapsed_ms or 0)
 
-        d.daily_stats:update({
-            where = { date = date },
-            set = {
-                new_count = stats.new_count + (is_new and 1 or 0),
-                review_count = stats.review_count + (is_new and 0 or 1),
-                [rating_field] = (stats[rating_field] or 0) + 1,
-                total_time_ms = stats.total_time_ms + (review.elapsed_ms or 0),
-            },
-        })
+        d:execute(string.format(
+            "UPDATE daily_stats SET new_count = %d, review_count = %d, "
+            .. "wrong_count = %d, correct_count = %d, total_time_ms = %d "
+            .. "WHERE date = '%s'",
+            new_count, review_count, wrong_count, correct_count, total_time_ms, date
+        ))
     else
-        local is_new = review.state_before == "new"
-        local new_entry = {
-            date = date,
-            new_count = is_new and 1 or 0,
-            review_count = is_new and 0 or 1,
-            wrong_count = review.rating == 1 and 1 or 0,
-            correct_count = review.rating == 2 and 1 or 0,
-            total_time_ms = review.elapsed_ms or 0,
-        }
-        d.daily_stats:insert(new_entry)
+        d:execute(string.format(
+            "INSERT INTO daily_stats (date, new_count, review_count, wrong_count, correct_count, total_time_ms) "
+            .. "VALUES ('%s', %d, %d, %d, %d, %d)",
+            date,
+            is_new and 1 or 0,
+            is_new and 0 or 1,
+            review.rating == 1 and 1 or 0,
+            review.rating == 2 and 1 or 0,
+            review.elapsed_ms or 0
+        ))
     end
 end
 
@@ -639,7 +675,7 @@ end
 ---@return table List of orphaned card IDs
 function M.find_orphaned_cards()
     local d = M.get()
-    local cards = d.cards:get() or {}
+    local cards = d:eval("SELECT id, file_path FROM cards") or {}
     local orphaned = {}
 
     for _, card in ipairs(cards) do
