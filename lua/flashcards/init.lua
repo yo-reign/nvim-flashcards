@@ -26,15 +26,54 @@ function M.setup(opts)
     M._initialized = true
 end
 
+--- Get available tags for completion
+---@return table List of tags
+local function get_tags_for_completion()
+    local ok, db = pcall(require, "flashcards.db")
+    if not ok then
+        return {}
+    end
+    local tags = db.get_all_tags()
+    -- Add # prefix for display
+    local result = {}
+    for _, tag in ipairs(tags) do
+        table.insert(result, "#" .. tag)
+    end
+    return result
+end
+
 --- Register all user commands
 function M._register_commands()
     local commands = {
         {
             name = "FlashcardsReview",
             fn = function(opts)
-                require("flashcards.ui.review").start(opts.args)
+                local tag = opts.args
+                if not tag or #tag == 0 then
+                    -- No tag specified - show tag picker
+                    M._show_tag_picker()
+                else
+                    require("flashcards.ui.review").start(tag)
+                end
             end,
-            opts = { nargs = "?", desc = "Start flashcard review session" },
+            opts = {
+                nargs = "?",
+                desc = "Start flashcard review session",
+                complete = function(arg_lead)
+                    local tags = get_tags_for_completion()
+                    if not arg_lead or #arg_lead == 0 then
+                        return tags
+                    end
+                    -- Filter tags that match the prefix
+                    local filtered = {}
+                    for _, tag in ipairs(tags) do
+                        if tag:lower():find(arg_lead:lower(), 1, true) then
+                            table.insert(filtered, tag)
+                        end
+                    end
+                    return filtered
+                end,
+            },
         },
         {
             name = "FlashcardsScan",
@@ -83,6 +122,73 @@ function M._register_commands()
     for _, cmd in ipairs(commands) do
         vim.api.nvim_create_user_command(cmd.name, cmd.fn, cmd.opts)
     end
+end
+
+--- Show tag picker for review
+function M._show_tag_picker()
+    local db = require("flashcards.db")
+    local config = require("flashcards.config")
+
+    -- Validate config first
+    local valid, err = config.validate()
+    if not valid then
+        vim.notify("Flashcards: " .. err, vim.log.levels.ERROR)
+        return
+    end
+
+    db.init()
+
+    -- Get tag counts with due card information
+    local tag_counts = db.count_by_tag()
+    local due_counts = db.count_due()
+
+    -- Build options list
+    local options = {}
+
+    -- Add "All cards" option first
+    table.insert(options, {
+        label = "All cards",
+        tag = nil,
+        count = due_counts.total or 0,
+    })
+
+    -- Add tags sorted by count
+    local sorted_tags = {}
+    for tag, count in pairs(tag_counts) do
+        table.insert(sorted_tags, { tag = tag, count = count })
+    end
+    table.sort(sorted_tags, function(a, b)
+        return a.count > b.count
+    end)
+
+    for _, item in ipairs(sorted_tags) do
+        table.insert(options, {
+            label = "#" .. item.tag,
+            tag = item.tag,
+            count = item.count,
+        })
+    end
+
+    if #options <= 1 then
+        -- No tags found, just start review with all cards
+        require("flashcards.ui.review").start()
+        return
+    end
+
+    -- Format options for vim.ui.select
+    local formatted = {}
+    for _, opt in ipairs(options) do
+        table.insert(formatted, string.format("%s (%d cards)", opt.label, opt.count))
+    end
+
+    vim.ui.select(formatted, {
+        prompt = "Select tag to review:",
+    }, function(choice, idx)
+        if choice and idx then
+            local selected = options[idx]
+            require("flashcards.ui.review").start(selected.tag)
+        end
+    end)
 end
 
 --- Setup autocommands for auto-sync
