@@ -123,6 +123,55 @@ function M.scan_directory(dir)
     return results
 end
 
+--- Write card IDs back to source file
+---@param file_path string File path
+---@param cards table Cards that need IDs written
+---@return boolean Success
+local function write_card_ids(file_path, cards)
+    if #cards == 0 then
+        return true
+    end
+
+    local content = utils.read_file(file_path)
+    if not content then
+        return false
+    end
+
+    local lines = utils.lines(content)
+
+    -- Sort cards by line number descending (so we can modify from bottom up)
+    table.sort(cards, function(a, b)
+        return a.line_number > b.line_number
+    end)
+
+    for _, card in ipairs(cards) do
+        local line_num = card.line_number
+        if line_num <= #lines then
+            local line = lines[line_num]
+            local id_comment = utils.format_card_id(card.id)
+
+            -- Check if it's a fenced card (:::card line) or inline
+            if line:match("^%s*:::%s*%w+") then
+                -- Fenced card - append ID to :::card line
+                lines[line_num] = line .. " " .. id_comment
+            else
+                -- Inline card - append ID at end of line
+                lines[line_num] = line .. " " .. id_comment
+            end
+        end
+    end
+
+    -- Write back to file
+    local file = io.open(file_path, "w")
+    if not file then
+        return false
+    end
+    file:write(table.concat(lines, "\n"))
+    file:close()
+
+    return true
+end
+
 --- Scan a single file for cards
 ---@param file_path string File path
 ---@param opts table|nil Options {silent}
@@ -147,6 +196,25 @@ function M.scan_file(file_path, opts)
     -- Parse cards
     local cards = parser.parse_file(file_path, content)
     results.cards_found = #cards
+
+    -- Collect cards that need IDs written
+    local cards_need_ids = {}
+    for _, card in ipairs(cards) do
+        if card.needs_id_write then
+            table.insert(cards_need_ids, card)
+        end
+    end
+
+    -- Write IDs to source file if needed
+    if #cards_need_ids > 0 then
+        local write_ok = write_card_ids(file_path, cards_need_ids)
+        if not write_ok and not opts.silent then
+            vim.notify(
+                string.format("Could not write card IDs to %s", file_path),
+                vim.log.levels.WARN
+            )
+        end
+    end
 
     -- Get existing cards for this file
     local existing = db.get_cards_by_file(file_path)

@@ -58,26 +58,34 @@ nvim-flashcards/
 
 ## Card Syntax
 
+### Card IDs
+
+Cards are identified by unique IDs stored as markdown comments. IDs are auto-generated when scanning:
+- Inline: `front :: back #tags <!-- fc:abc12345 -->`
+- Fenced: `:::card <!-- fc:abc12345 -->`
+
+This allows editing card content without losing review history.
+
 ### Single-line Cards
 
 ```markdown
-<!-- Basic card -->
+<!-- Basic card (ID will be added on scan) -->
 What is a closure? :: A function that captures variables from its enclosing scope
 
 <!-- With tags -->
 What is a monad? :: A design pattern for chaining operations #haskell #fp
 
-<!-- Alternative syntax using special markers -->
-?? What is polymorphism :: The ability of different types to respond to the same interface ??
+<!-- After scanning, IDs are added automatically -->
+What is a closure? :: A function that captures variables from its enclosing scope <!-- fc:a1b2c3d4 -->
 ```
 
-### Multi-line Cards (Fenced Blocks)
+### Multi-line Cards (Fenced with :::)
 
-````markdown
-```card
+Uses `:::card` fences which don't conflict with code blocks inside:
+
+```markdown
+:::card <!-- fc:x9y8z7w6 -->
 What does this function do?
----
-It reverses a string using recursion:
 
 ```python
 def reverse(s):
@@ -85,9 +93,12 @@ def reverse(s):
         return s
     return reverse(s[1:]) + s[0]
 ```
-#python #recursion
+---
+It reverses a string using recursion.
+::: #python #recursion
 ```
-````
+
+Tags go on the closing `:::` line.
 
 ### Alternative Multi-line Syntax (Custom Delimiters)
 
@@ -487,21 +498,42 @@ vim.bo[buf].filetype = "markdown"
 
 ### Card ID Generation
 
-Cards are identified by a stable hash to survive file edits:
+Cards are identified by inline markdown comment IDs (e.g., `<!-- fc:abc12345 -->`):
 
 ```lua
-local function generate_card_id(file_path, front, back)
-    local content = file_path .. "|" .. front .. "|" .. back
-    return vim.fn.sha256(content):sub(1, 16)
+-- Generate a new unique 8-character ID
+local function generate_new_id()
+    local chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+    local id = ""
+    for _ = 1, 8 do
+        local idx = math.random(1, #chars)
+        id = id .. chars:sub(idx, idx)
+    end
+    return id
+end
+
+-- Extract existing ID from text
+local function extract_card_id(text)
+    return text:match("<!%-%-%s*fc:([%w]+)%s*%-%->")
+end
+
+-- Format ID as comment
+local function format_card_id(id)
+    return "<!-- fc:" .. id .. " -->"
 end
 ```
+
+When scanning:
+1. If card has an existing `<!-- fc:id -->` comment, use that ID
+2. If no ID exists, generate a new one and write it to the source file
+3. IDs persist through content edits, preserving review history
 
 ### Handling Card Updates
 
 When scanning, compare new cards against existing:
-1. **Same ID exists**: Update content if changed
-2. **New card**: Insert with "new" state
-3. **Card missing**: Mark as orphaned (don't delete immediately)
+1. **Same ID exists**: Update content if changed (preserves review state)
+2. **New card**: Insert with "new" state, write ID to source file
+3. **Card missing**: Delete from database
 
 ### Performance Considerations
 

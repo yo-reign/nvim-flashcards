@@ -81,7 +81,7 @@ function M.find_base_directory(file_path)
     return nil
 end
 
---- Parse inline cards (single line: "front :: back #tags")
+--- Parse inline cards (single line: "front :: back #tags <!-- fc:id -->")
 ---@param file_path string File path
 ---@param content string File content
 ---@param opts table Pattern options
@@ -110,19 +110,24 @@ function M.parse_inline(file_path, content, opts)
         if front and back and #utils.trim(front) > 0 then
             front = utils.trim(front)
 
-            -- Extract tags from back
-            local tags = utils.parse_tags(back)
-            back = utils.strip_tags(back)
-            back = utils.trim(back)
+            -- Extract existing card ID from the line
+            local existing_id = utils.extract_card_id(line)
 
-            if #back > 0 then
+            -- Extract tags from back (strip ID comment first)
+            local back_clean = utils.strip_card_id(back)
+            local tags = utils.parse_tags(back_clean)
+            back_clean = utils.strip_tags(back_clean)
+            back_clean = utils.trim(back_clean)
+
+            if #back_clean > 0 then
                 local card = {
-                    id = utils.generate_card_id(file_path, front, back),
+                    id = existing_id or utils.generate_new_id(),
                     file_path = file_path,
                     line_number = line_num,
                     front = front,
-                    back = back,
+                    back = back_clean,
                     tags = tags,
+                    needs_id_write = existing_id == nil,
                 }
                 table.insert(cards, card)
             end
@@ -134,7 +139,7 @@ function M.parse_inline(file_path, content, opts)
     return cards
 end
 
---- Parse fenced cards (:::card ... --- ... ::: #tags)
+--- Parse fenced cards (:::card <!-- fc:id --> ... --- ... ::: #tags)
 --- Uses ::: fence which doesn't conflict with code blocks inside cards
 ---@param file_path string File path
 ---@param content string File content
@@ -151,12 +156,16 @@ function M.parse_fenced(file_path, content, opts)
     while i <= #lines_arr do
         local line = lines_arr[i]
 
-        -- Look for opening :::card
-        local opener = line:match("^%s*:::%s*" .. fence_type .. "%s*$")
+        -- Look for opening :::card (with optional ID comment)
+        local opener = line:match("^%s*:::%s*" .. fence_type)
         if opener then
             local start_line = i
             local block_lines = {}
             local closing_tags = {}
+
+            -- Extract existing ID from opening line
+            local existing_id = utils.extract_card_id(line)
+
             i = i + 1
 
             -- Collect lines until closing :::
@@ -198,12 +207,13 @@ function M.parse_fenced(file_path, content, opts)
 
                     if #front > 0 and #back > 0 then
                         local card = {
-                            id = utils.generate_card_id(file_path, front, back),
+                            id = existing_id or utils.generate_new_id(),
                             file_path = file_path,
                             line_number = start_line,
                             front = front,
                             back = back,
                             tags = tags,
+                            needs_id_write = existing_id == nil,
                         }
                         table.insert(cards, card)
                     end

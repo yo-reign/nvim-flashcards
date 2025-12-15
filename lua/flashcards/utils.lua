@@ -2,7 +2,41 @@
 
 local M = {}
 
---- Generate a stable card ID from content
+--- Generate a new unique card ID
+---@return string 8-character alphanumeric ID
+function M.generate_new_id()
+    local chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+    local id = ""
+    math.randomseed(os.time() + math.floor(vim.loop.hrtime() / 1000))
+    for _ = 1, 8 do
+        local idx = math.random(1, #chars)
+        id = id .. chars:sub(idx, idx)
+    end
+    return id
+end
+
+--- Extract card ID from comment (<!-- fc:abc123 -->)
+---@param text string Text that may contain ID comment
+---@return string|nil ID if found
+function M.extract_card_id(text)
+    return text:match("<!%-%-%s*fc:([%w]+)%s*%-%->")
+end
+
+--- Format card ID as comment
+---@param id string Card ID
+---@return string Formatted comment
+function M.format_card_id(id)
+    return "<!-- fc:" .. id .. " -->"
+end
+
+--- Strip card ID comment from text
+---@param text string Text containing ID comment
+---@return string Text without ID comment
+function M.strip_card_id(text)
+    return text:gsub("%s*<!%-%-%s*fc:[%w]+%s*%-%->%s*", " "):gsub("^%s+", ""):gsub("%s+$", "")
+end
+
+--- Legacy: Generate a stable card ID from content (for migration)
 ---@param file_path string Source file path
 ---@param front string Card front content
 ---@param back string Card back content

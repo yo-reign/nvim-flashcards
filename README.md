@@ -92,6 +92,11 @@ use {
 Question text :: Answer text #tag1 #tag2
 ```
 
+After scanning, an ID comment is automatically added:
+```markdown
+Question text :: Answer text #tag1 #tag2 <!-- fc:abc12345 -->
+```
+
 ### Multi-line Cards (Fenced)
 
 Uses `:::card` fences which don't conflict with code blocks inside:
@@ -109,6 +114,11 @@ def reverse(s):
 ---
 It reverses a string using recursion.
 ::: #python #recursion
+```
+
+After scanning, an ID is added to the opening line:
+```markdown
+:::card <!-- fc:xyz98765 -->
 ```
 
 Tags go on the closing `:::` line.
@@ -236,9 +246,12 @@ require("flashcards").setup({
 
 ### Card Tracking
 
-Cards are identified by a hash of their content (file path + front + back). This means:
-- **Same content = same card** - Progress is preserved
-- **Content changes = new card** - If you edit a card significantly, it becomes a new card
+Cards are identified by a unique ID stored as a markdown comment (e.g., `<!-- fc:abc12345 -->`):
+
+- **IDs are auto-generated** - When you scan, new cards get IDs written to the source file
+- **Edit freely** - Change the front/back content without losing review history
+- **Stable identity** - As long as the ID comment stays, the card keeps its progress
+- **Git-friendly** - IDs are visible in your notes and sync naturally
 
 The database is stored in your notes directory (`.flashcards.db`) so you can sync it with git across devices.
 
