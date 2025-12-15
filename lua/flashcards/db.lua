@@ -3,98 +3,122 @@
 
 local M = {}
 
-local sqlite = require("sqlite")
 local config = require("flashcards.config")
 local utils = require("flashcards.utils")
 
 -- Database connection (lazy-loaded)
 local db = nil
+local db_path_cached = nil
+local initialized = false
 
---- Database schema
-local schema = {
-    cards = {
-        id = { "text", primary = true },
-        file_path = { "text", required = true },
-        line_number = "integer",
-        front = { "text", required = true },
-        back = { "text", required = true },
-        created_at = "integer",
-        updated_at = "integer",
-    },
-    card_states = {
-        card_id = { "text", primary = true, reference = "cards.id" },
-        state = { "text", default = "new" }, -- new, learning, review, relearning
-        stability = { "real", default = 0 },
-        difficulty = { "real", default = 0 },
-        elapsed_days = { "integer", default = 0 },
-        scheduled_days = { "integer", default = 0 },
-        due_date = "integer",
-        last_review = "integer",
-        reps = { "integer", default = 0 },
-        lapses = { "integer", default = 0 },
-        learning_step = { "integer", default = 0 }, -- Current step in learning phase
-    },
-    reviews = {
-        id = true, -- Auto-increment primary key
-        card_id = { "text", reference = "cards.id" },
-        rating = "integer",
-        reviewed_at = "integer",
-        elapsed_ms = "integer",
-        stability_before = "real",
-        stability_after = "real",
-        difficulty_before = "real",
-        difficulty_after = "real",
-        state_before = "text",
-        state_after = "text",
-    },
-    card_tags = {
-        card_id = { "text", reference = "cards.id" },
-        tag = "text",
-    },
-    daily_stats = {
-        date = { "text", primary = true }, -- YYYY-MM-DD
-        new_count = { "integer", default = 0 },
-        review_count = { "integer", default = 0 },
-        wrong_count = { "integer", default = 0 },
-        correct_count = { "integer", default = 0 },
-        total_time_ms = { "integer", default = 0 },
-    },
-}
+--- Create tables using raw SQL
+local function create_tables(database)
+    database:execute([[
+        CREATE TABLE IF NOT EXISTS cards (
+            id TEXT PRIMARY KEY,
+            file_path TEXT NOT NULL,
+            line_number INTEGER,
+            front TEXT NOT NULL,
+            back TEXT NOT NULL,
+            created_at INTEGER,
+            updated_at INTEGER
+        )
+    ]])
+
+    database:execute([[
+        CREATE TABLE IF NOT EXISTS card_states (
+            card_id TEXT PRIMARY KEY,
+            state TEXT DEFAULT 'new',
+            stability REAL DEFAULT 0,
+            difficulty REAL DEFAULT 0,
+            elapsed_days INTEGER DEFAULT 0,
+            scheduled_days INTEGER DEFAULT 0,
+            due_date INTEGER,
+            last_review INTEGER,
+            reps INTEGER DEFAULT 0,
+            lapses INTEGER DEFAULT 0,
+            learning_step INTEGER DEFAULT 0
+        )
+    ]])
+
+    database:execute([[
+        CREATE TABLE IF NOT EXISTS reviews (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            card_id TEXT,
+            rating INTEGER,
+            reviewed_at INTEGER,
+            elapsed_ms INTEGER,
+            stability_before REAL,
+            stability_after REAL,
+            difficulty_before REAL,
+            difficulty_after REAL,
+            state_before TEXT,
+            state_after TEXT
+        )
+    ]])
+
+    database:execute([[
+        CREATE TABLE IF NOT EXISTS card_tags (
+            card_id TEXT,
+            tag TEXT
+        )
+    ]])
+
+    database:execute([[
+        CREATE TABLE IF NOT EXISTS daily_stats (
+            date TEXT PRIMARY KEY,
+            new_count INTEGER DEFAULT 0,
+            review_count INTEGER DEFAULT 0,
+            wrong_count INTEGER DEFAULT 0,
+            correct_count INTEGER DEFAULT 0,
+            total_time_ms INTEGER DEFAULT 0
+        )
+    ]])
+
+    -- Create indexes
+    pcall(function() database:execute("CREATE INDEX IF NOT EXISTS idx_cards_file ON cards(file_path)") end)
+    pcall(function() database:execute("CREATE INDEX IF NOT EXISTS idx_states_due ON card_states(due_date)") end)
+    pcall(function() database:execute("CREATE INDEX IF NOT EXISTS idx_states_state ON card_states(state)") end)
+    pcall(function() database:execute("CREATE INDEX IF NOT EXISTS idx_tags_tag ON card_tags(tag)") end)
+    pcall(function() database:execute("CREATE INDEX IF NOT EXISTS idx_tags_card ON card_tags(card_id)") end)
+    pcall(function() database:execute("CREATE INDEX IF NOT EXISTS idx_reviews_card ON reviews(card_id)") end)
+end
 
 --- Initialize database connection
 ---@param dir string|nil Directory for database file
----@return sqlite.Database Database instance
+---@return table Database instance
 function M.init(dir)
-    local db_path = config.get_db_path(dir)
+    -- Close existing connection if any
+    if db then
+        pcall(function() db:close() end)
+        db = nil
+        initialized = false
+    end
+
+    db_path_cached = config.get_db_path(dir)
 
     -- Create directory if it doesn't exist
-    local dir_path = vim.fn.fnamemodify(db_path, ":h")
+    local dir_path = vim.fn.fnamemodify(db_path_cached, ":h")
     vim.fn.mkdir(dir_path, "p")
 
+    -- Open database using the main sqlite module with minimal config
+    local sqlite = require("sqlite")
     db = sqlite({
-        uri = db_path,
-        cards = schema.cards,
-        card_states = schema.card_states,
-        reviews = schema.reviews,
-        card_tags = schema.card_tags,
-        daily_stats = schema.daily_stats,
+        uri = db_path_cached,
+        opts = { keep_open = true },
     })
 
-    -- Create indexes for performance (must be separate statements)
-    pcall(function() db:execute("CREATE INDEX IF NOT EXISTS idx_cards_file ON cards(file_path)") end)
-    pcall(function() db:execute("CREATE INDEX IF NOT EXISTS idx_states_due ON card_states(due_date)") end)
-    pcall(function() db:execute("CREATE INDEX IF NOT EXISTS idx_states_state ON card_states(state)") end)
-    pcall(function() db:execute("CREATE INDEX IF NOT EXISTS idx_tags_tag ON card_tags(tag)") end)
-    pcall(function() db:execute("CREATE INDEX IF NOT EXISTS idx_tags_card ON card_tags(card_id)") end)
-    pcall(function() db:execute("CREATE INDEX IF NOT EXISTS idx_reviews_card ON reviews(card_id)") end)
+    -- Create tables
+    create_tables(db)
+    initialized = true
 
     return db
 end
 
 --- Get database connection (initializes if needed)
----@return sqlite.Database
+---@return table
 function M.get()
-    if not db then
+    if not db or not initialized then
         M.init()
     end
     return db
@@ -103,8 +127,9 @@ end
 --- Close database connection
 function M.close()
     if db then
-        db:close()
+        pcall(function() db:close() end)
         db = nil
+        initialized = false
     end
 end
 
