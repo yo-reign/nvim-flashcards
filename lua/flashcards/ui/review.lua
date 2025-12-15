@@ -113,6 +113,28 @@ local function setup_keymaps(popup)
     end, { buffer = bufnr, nowait = true })
 end
 
+--- Transform content to show language labels for code blocks
+---@param content string Card content
+---@return string Transformed content with language labels
+local function add_language_labels(content)
+    local lines = utils.lines(content)
+    local result = {}
+
+    for _, line in ipairs(lines) do
+        -- Check for code block opening with language
+        local lang = line:match("^```(%w+)%s*$")
+        if lang then
+            -- Add language label before the code block
+            table.insert(result, "── " .. lang .. " ──")
+            table.insert(result, line)
+        else
+            table.insert(result, line)
+        end
+    end
+
+    return table.concat(result, "\n")
+end
+
 --- Apply syntax highlighting to the buffer
 ---@param bufnr integer Buffer number
 ---@param lines table Lines content
@@ -129,6 +151,11 @@ local function apply_highlights(bufnr, lines)
         -- Highlight divider
         if line:match("^%s*─+%s*$") then
             vim.api.nvim_buf_add_highlight(bufnr, ns, "FlashcardDivider", i - 1, 0, -1)
+        end
+
+        -- Highlight language labels (── lang ──)
+        if line:match("^%s*── %w+ ──$") then
+            vim.api.nvim_buf_add_highlight(bufnr, ns, "FlashcardLanguage", i - 1, 0, -1)
         end
 
         -- Highlight tags
@@ -184,8 +211,9 @@ local function render_card()
     table.insert(lines, header)
     table.insert(lines, "")
 
-    -- Card front (question)
-    local front_lines = utils.lines(card.front)
+    -- Card front (question) - add language labels for code blocks
+    local front_with_labels = add_language_labels(card.front)
+    local front_lines = utils.lines(front_with_labels)
     for _, line in ipairs(front_lines) do
         table.insert(lines, "  " .. line)
     end
@@ -196,8 +224,9 @@ local function render_card()
         table.insert(lines, "  " .. string.rep("─", 50))
         table.insert(lines, "")
 
-        -- Card back (answer)
-        local back_lines = utils.lines(card.back)
+        -- Card back (answer) - add language labels for code blocks
+        local back_with_labels = add_language_labels(card.back)
+        local back_lines = utils.lines(back_with_labels)
         for _, line in ipairs(back_lines) do
             table.insert(lines, "  " .. line)
         end

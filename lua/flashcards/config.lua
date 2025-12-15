@@ -113,6 +113,7 @@ M.defaults = {
         FlashcardTag = { link = "Identifier" },
         FlashcardDivider = { link = "Comment" },
         FlashcardProgress = { link = "Number" },
+        FlashcardLanguage = { link = "Type" },  -- Language label for code blocks
         FlashcardWrong = { fg = "#f38ba8" },   -- Red for wrong
         FlashcardCorrect = { fg = "#a6e3a1" }, -- Green for correct
     },
