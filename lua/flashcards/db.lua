@@ -287,24 +287,20 @@ function M.get_due_cards(opts)
     local d = M.get()
     local now = utils.now()
 
-    -- Build query
-    local query = string.format([[
-        SELECT c.*, cs.state, cs.stability, cs.difficulty, cs.elapsed_days,
-               cs.scheduled_days, cs.due_date, cs.last_review, cs.reps, cs.lapses
-        FROM cards c
-        JOIN card_states cs ON c.id = cs.card_id
-        WHERE cs.due_date <= %d
-    ]], now)
+    -- Build query parts
+    local query = "SELECT c.*, cs.state, cs.stability, cs.difficulty, cs.elapsed_days, "
+        .. "cs.scheduled_days, cs.due_date, cs.last_review, cs.reps, cs.lapses "
+        .. "FROM cards c "
+        .. "JOIN card_states cs ON c.id = cs.card_id "
+        .. string.format("WHERE cs.due_date <= %d", now)
 
     -- Filter by tag if specified
     if opts.tag then
         local tag_pattern = opts.tag:gsub("'", "''")
-        query = query .. string.format([[
-            AND c.id IN (
-                SELECT card_id FROM card_tags
-                WHERE tag = '%s' OR tag LIKE '%s/%%'
-            )
-        ]], tag_pattern, tag_pattern)
+        query = query .. string.format(
+            " AND c.id IN (SELECT card_id FROM card_tags WHERE tag = '%s' OR tag LIKE '%s/%%')",
+            tag_pattern, tag_pattern
+        )
     end
 
     -- Filter by state if specified
@@ -313,16 +309,11 @@ function M.get_due_cards(opts)
     end
 
     -- Order: learning cards first, then by due date
-    query = query .. [[
-        ORDER BY
-            CASE cs.state
-                WHEN 'learning' THEN 0
-                WHEN 'relearning' THEN 1
-                WHEN 'new' THEN 2
-                ELSE 3
-            END,
-            cs.due_date ASC
-    ]]
+    query = query .. " ORDER BY CASE cs.state "
+        .. "WHEN 'learning' THEN 0 "
+        .. "WHEN 'relearning' THEN 1 "
+        .. "WHEN 'new' THEN 2 "
+        .. "ELSE 3 END, cs.due_date ASC"
 
     -- Apply limit
     if opts.limit then
@@ -339,13 +330,11 @@ end
 function M.get_new_cards(limit)
     local d = M.get()
 
-    local query = [[
-        SELECT c.*, cs.state, cs.stability, cs.difficulty, cs.due_date
-        FROM cards c
-        JOIN card_states cs ON c.id = cs.card_id
-        WHERE cs.state = 'new'
-        ORDER BY c.created_at ASC
-    ]]
+    local query = "SELECT c.*, cs.state, cs.stability, cs.difficulty, cs.due_date "
+        .. "FROM cards c "
+        .. "JOIN card_states cs ON c.id = cs.card_id "
+        .. "WHERE cs.state = 'new' "
+        .. "ORDER BY c.created_at ASC"
 
     if limit then
         query = query .. string.format(" LIMIT %d", limit)
@@ -360,11 +349,7 @@ end
 function M.count_by_state()
     local d = M.get()
 
-    local results = d:eval([[
-        SELECT state, COUNT(*) as count
-        FROM card_states
-        GROUP BY state
-    ]]) or {}
+    local results = d:eval("SELECT state, COUNT(*) as count FROM card_states GROUP BY state") or {}
 
     local counts = { new = 0, learning = 0, review = 0, relearning = 0, total = 0 }
     for _, row in ipairs(results) do
@@ -383,15 +368,15 @@ function M.count_due()
     local d = M.get()
     local now = utils.now()
 
-    local results = d:eval(string.format([[
-        SELECT
-            SUM(CASE WHEN state = 'new' THEN 1 ELSE 0 END) as new,
-            SUM(CASE WHEN state = 'learning' OR state = 'relearning' THEN 1 ELSE 0 END) as learning,
-            SUM(CASE WHEN state = 'review' THEN 1 ELSE 0 END) as review,
-            COUNT(*) as total
-        FROM card_states
-        WHERE due_date <= %d
-    ]], now))
+    local query = "SELECT "
+        .. "SUM(CASE WHEN state = 'new' THEN 1 ELSE 0 END) as new, "
+        .. "SUM(CASE WHEN state = 'learning' OR state = 'relearning' THEN 1 ELSE 0 END) as learning, "
+        .. "SUM(CASE WHEN state = 'review' THEN 1 ELSE 0 END) as review, "
+        .. "COUNT(*) as total "
+        .. "FROM card_states "
+        .. string.format("WHERE due_date <= %d", now)
+
+    local results = d:eval(query) or {}
 
     return results[1] or { new = 0, learning = 0, review = 0, total = 0 }
 end
@@ -437,9 +422,7 @@ end
 function M.get_all_tags()
     local d = M.get()
 
-    local results = d:eval([[
-        SELECT DISTINCT tag FROM card_tags ORDER BY tag
-    ]]) or {}
+    local results = d:eval("SELECT DISTINCT tag FROM card_tags ORDER BY tag") or {}
 
     local tags = {}
     for _, row in ipairs(results) do
@@ -455,14 +438,14 @@ function M.get_cards_by_tag(tag)
     local d = M.get()
     local tag_escaped = tag:gsub("'", "''")
 
-    local result = d:eval(string.format([[
-        SELECT DISTINCT c.*, cs.state, cs.stability, cs.difficulty, cs.due_date
-        FROM cards c
-        JOIN card_states cs ON c.id = cs.card_id
-        JOIN card_tags ct ON c.id = ct.card_id
-        WHERE ct.tag = '%s' OR ct.tag LIKE '%s/%%'
-        ORDER BY c.file_path, c.line_number
-    ]], tag_escaped, tag_escaped))
+    local query = "SELECT DISTINCT c.*, cs.state, cs.stability, cs.difficulty, cs.due_date "
+        .. "FROM cards c "
+        .. "JOIN card_states cs ON c.id = cs.card_id "
+        .. "JOIN card_tags ct ON c.id = ct.card_id "
+        .. string.format("WHERE ct.tag = '%s' OR ct.tag LIKE '%s/%%' ", tag_escaped, tag_escaped)
+        .. "ORDER BY c.file_path, c.line_number"
+
+    local result = d:eval(query)
     return result or {}
 end
 
@@ -471,12 +454,12 @@ end
 function M.count_by_tag()
     local d = M.get()
 
-    local results = d:eval([[
-        SELECT tag, COUNT(*) as count
-        FROM card_tags
-        GROUP BY tag
-        ORDER BY count DESC
-    ]]) or {}
+    local query = "SELECT tag, COUNT(*) as count "
+        .. "FROM card_tags "
+        .. "GROUP BY tag "
+        .. "ORDER BY count DESC"
+
+    local results = d:eval(query) or {}
 
     local counts = {}
     for _, row in ipairs(results) do
@@ -521,11 +504,9 @@ end
 function M.get_reviews(card_id, limit)
     local d = M.get()
 
-    local query = string.format([[
-        SELECT * FROM reviews
-        WHERE card_id = '%s'
-        ORDER BY reviewed_at DESC
-    ]], card_id:gsub("'", "''"))
+    local query = "SELECT * FROM reviews "
+        .. string.format("WHERE card_id = '%s' ", card_id:gsub("'", "''"))
+        .. "ORDER BY reviewed_at DESC"
 
     if limit then
         query = query .. string.format(" LIMIT %d", limit)
@@ -581,11 +562,11 @@ end
 function M.get_daily_stats(from_date, to_date)
     local d = M.get()
 
-    local result = d:eval(string.format([[
-        SELECT * FROM daily_stats
-        WHERE date >= '%s' AND date <= '%s'
-        ORDER BY date ASC
-    ]], from_date, to_date))
+    local query = "SELECT * FROM daily_stats "
+        .. string.format("WHERE date >= '%s' AND date <= '%s' ", from_date, to_date)
+        .. "ORDER BY date ASC"
+
+    local result = d:eval(query)
     return result or {}
 end
 
@@ -598,22 +579,19 @@ function M.get_stats()
     local due_counts = M.count_due()
 
     -- Get total reviews (binary: rating 2 = correct, rating 1 = wrong)
-    local review_results = d:eval([[
-        SELECT
-            COUNT(*) as total_reviews,
-            AVG(elapsed_ms) as avg_time_ms,
-            SUM(CASE WHEN rating = 2 THEN 1 ELSE 0 END) as correct,
-            SUM(CASE WHEN rating = 1 THEN 1 ELSE 0 END) as wrong
-        FROM reviews
-    ]]) or {}
+    local review_query = "SELECT "
+        .. "COUNT(*) as total_reviews, "
+        .. "AVG(elapsed_ms) as avg_time_ms, "
+        .. "SUM(CASE WHEN rating = 2 THEN 1 ELSE 0 END) as correct, "
+        .. "SUM(CASE WHEN rating = 1 THEN 1 ELSE 0 END) as wrong "
+        .. "FROM reviews"
+    local review_results = d:eval(review_query) or {}
     local review_stats = review_results[1] or { total_reviews = 0, avg_time_ms = 0, correct = 0, wrong = 0 }
 
     -- Get streak (consecutive days with reviews)
-    local streak_query = [[
-        SELECT date FROM daily_stats
-        WHERE review_count > 0 OR new_count > 0
-        ORDER BY date DESC
-    ]]
+    local streak_query = "SELECT date FROM daily_stats "
+        .. "WHERE review_count > 0 OR new_count > 0 "
+        .. "ORDER BY date DESC"
     local dates = d:eval(streak_query) or {}
 
     local streak = 0
