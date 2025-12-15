@@ -120,7 +120,7 @@ function M.upsert_card(card)
     local d = M.get()
 
     -- Check if card exists
-    local existing = d.cards:where({ id = card.id })
+    local existing = d.cards:where({ id = card.id }) or {}
 
     if #existing > 0 then
         -- Update existing card
@@ -187,7 +187,7 @@ end
 function M.get_card(card_id)
     local d = M.get()
 
-    local cards = d.cards:where({ id = card_id })
+    local cards = d.cards:where({ id = card_id }) or {}
     if #cards == 0 then
         return nil
     end
@@ -195,7 +195,7 @@ function M.get_card(card_id)
     local card = cards[1]
 
     -- Get state
-    local states = d.card_states:where({ card_id = card_id })
+    local states = d.card_states:where({ card_id = card_id }) or {}
     if #states > 0 then
         card.state = states[1]
     end
@@ -661,7 +661,7 @@ end
 ---@return table List of orphaned card IDs
 function M.find_orphaned_cards()
     local d = M.get()
-    local cards = d.cards:get()
+    local cards = d.cards:get() or {}
     local orphaned = {}
 
     for _, card in ipairs(cards) do
