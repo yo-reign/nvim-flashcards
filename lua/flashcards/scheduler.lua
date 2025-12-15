@@ -240,18 +240,22 @@ function Session:answer(rating)
     local rating_names = { "wrong", "correct" }
     self.stats[rating_names[rating]] = self.stats[rating_names[rating]] + 1
 
-    -- If card goes to learning/relearning, add it back to queue
+    -- If card goes to learning/relearning, schedule it for later in this session
     if new_state.state == fsrs.State.Learning or new_state.state == fsrs.State.Relearning then
-        -- Update card in queue with new state
-        card.state = new_state.state
-        card.stability = new_state.stability
-        card.difficulty = new_state.difficulty
-        card.due_date = new_state.due_date
-
-        -- Add to end of queue if due soon
         local minutes_until_due = (new_state.due_date - utils.now()) / 60
-        if minutes_until_due < 30 then
-            table.insert(self.cards, card)
+
+        -- Only re-add if due within session AND not already re-added
+        if minutes_until_due < 30 and not card._requeued then
+            -- Create a copy of the card with updated state (don't reuse same object)
+            local requeued_card = vim.tbl_extend("force", {}, card)
+            requeued_card.state = new_state.state
+            requeued_card.stability = new_state.stability
+            requeued_card.difficulty = new_state.difficulty
+            requeued_card.due_date = new_state.due_date
+            requeued_card.learning_step = new_state.learning_step
+            requeued_card._requeued = true  -- Mark to prevent infinite re-adding
+
+            table.insert(self.cards, requeued_card)
         end
     end
 
