@@ -140,15 +140,15 @@ local function apply_highlights(bufnr, lines)
 
         -- Highlight rating buttons
         if line:match("%[1%]") then
-            local s, e = line:find("%[1%] Wrong")
+            local s, e = line:find("%[1%] Correct")
             if s then
-                vim.api.nvim_buf_add_highlight(bufnr, ns, "FlashcardWrong", i - 1, s - 1, e)
+                vim.api.nvim_buf_add_highlight(bufnr, ns, "FlashcardCorrect", i - 1, s - 1, e)
             end
         end
         if line:match("%[2%]") then
-            local s, e = line:find("%[2%] Correct")
+            local s, e = line:find("%[2%] Wrong")
             if s then
-                vim.api.nvim_buf_add_highlight(bufnr, ns, "FlashcardCorrect", i - 1, s - 1, e)
+                vim.api.nvim_buf_add_highlight(bufnr, ns, "FlashcardWrong", i - 1, s - 1, e)
             end
         end
     end
@@ -218,7 +218,7 @@ local function render_card()
             table.insert(lines, tag_line)
         end
 
-        -- Rating options (binary: Wrong/Correct)
+        -- Rating options (binary: Correct/Wrong)
         table.insert(lines, "")
         table.insert(lines, "")
 
@@ -226,23 +226,23 @@ local function render_card()
         local keymaps = config.options.ui.keymaps
 
         local rating_line = string.format(
-            "  [%s] Wrong    [%s] Correct      [%s] Quit",
-            keymaps.wrong, keymaps.correct, keymaps.quit
+            "  [%s] Correct    [%s] Wrong      [%s] Quit",
+            keymaps.correct, keymaps.wrong, keymaps.quit
         )
         table.insert(lines, rating_line)
 
         if config.options.ui.show_intervals then
             local interval_line = string.format(
-                "   <%s          <%s",
-                intervals[1] and intervals[1].formatted or "?",
-                intervals[2] and intervals[2].formatted or "?"
+                "   <%s            <%s",
+                intervals[2] and intervals[2].formatted or "?",  -- Correct interval
+                intervals[1] and intervals[1].formatted or "?"   -- Wrong interval
             )
             table.insert(lines, interval_line)
         end
 
         -- Additional hints
         table.insert(lines, "")
-        table.insert(lines, "  (Also: n=Wrong, y=Correct, s=Skip, u=Undo, e=Edit)")
+        table.insert(lines, "  (Also: y=Correct, n=Wrong, s=Skip, u=Undo, e=Edit)")
     else
         -- Show answer prompt
         table.insert(lines, "")

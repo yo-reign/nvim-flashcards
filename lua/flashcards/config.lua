@@ -17,10 +17,10 @@ M.defaults = {
             enabled = true,
             separator = "::",
         },
-        -- Fenced block pattern: ```card ... --- ... ```
+        -- Fenced block pattern: :::card ... --- ... ::: #tags
         fenced = {
             enabled = true,
-            fence = "card",
+            fence = "card",  -- Used with ::: (e.g., :::card)
         },
         -- Custom delimiter pattern: ??? ... --- ... ???
         custom = {
@@ -69,10 +69,10 @@ M.defaults = {
         border = "rounded",
         -- Key to reveal answer
         show_answer_key = "<Space>",
-        -- Keymaps for rating (binary: wrong/correct)
+        -- Keymaps for rating (binary: correct/wrong)
         keymaps = {
-            wrong = "1",
-            correct = "2",
+            correct = "1",
+            wrong = "2",
             quit = "q",
             edit = "e",
             skip = "s",

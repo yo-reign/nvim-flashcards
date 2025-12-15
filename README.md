@@ -82,7 +82,7 @@ use {
    :FlashcardsReview
    ```
 
-4. Use `1` for Wrong, `2` for Correct (or `n`/`y`)
+4. Use `1` for Correct, `2` for Wrong (or `y`/`n`)
 
 ## Card Syntax
 
@@ -94,11 +94,11 @@ Question text :: Answer text #tag1 #tag2
 
 ### Multi-line Cards (Fenced)
 
-````markdown
-```card
+Uses `:::card` fences which don't conflict with code blocks inside:
+
+```markdown
+:::card
 What does this function do?
----
-It reverses a string using recursion:
 
 ```python
 def reverse(s):
@@ -106,9 +106,12 @@ def reverse(s):
         return s
     return reverse(s[1:]) + s[0]
 ```
-#python #recursion
+---
+It reverses a string using recursion.
+::: #python #recursion
 ```
-````
+
+Tags go on the closing `:::` line.
 
 ### Multi-line Cards (Custom Delimiters)
 
@@ -146,8 +149,8 @@ Cards also inherit tags from their file path:
 
 | Command | Description |
 |---------|-------------|
-| `:FlashcardsReview` | Start review session |
-| `:FlashcardsReview #tag` | Review cards with specific tag |
+| `:FlashcardsReview` | Start review session (shows tag picker with due counts) |
+| `:FlashcardsReview #tag` | Review cards with specific tag (supports Tab completion) |
 | `:FlashcardsScan` | Scan directories for cards |
 | `:FlashcardsStats` | Show statistics |
 | `:FlashcardsBrowse` | Browse cards (Telescope) |
@@ -155,13 +158,30 @@ Cards also inherit tags from their file path:
 | `:FlashcardsTags` | Browse by tags (Telescope) |
 | `:FlashcardsInit` | Initialize in current directory |
 
+### Tag Picker
+
+Running `:FlashcardsReview` without arguments opens a tag picker that shows:
+- Due count for each tag (how many cards need review now)
+- Total card count per tag
+- Tags sorted by due count (most urgent first)
+
+```
+Select tag to review:
+> All cards - 5 due (20 total)
+  #math - 3 due (10 total)
+  #programming - 2 due (8 total)
+  #history - 0 due (5 total)
+```
+
+Use Tab completion with `:FlashcardsReview #` to quickly filter by tag.
+
 ## Review Keybindings
 
 | Key | Action |
 |-----|--------|
 | `Space` | Show answer |
-| `1` or `n` | Wrong (didn't know) |
-| `2` or `y` | Correct (knew it) |
+| `1` or `y` | Correct (knew it) |
+| `2` or `n` | Wrong (didn't know) |
 | `s` | Skip card |
 | `u` | Undo last answer |
 | `e` | Edit card source |
@@ -193,8 +213,8 @@ require("flashcards").setup({
         height = 0.6,
         border = "rounded",
         keymaps = {
-            wrong = "1",
-            correct = "2",
+            correct = "1",
+            wrong = "2",
             quit = "q",
             skip = "s",
             undo = "u",
@@ -212,13 +232,31 @@ require("flashcards").setup({
 })
 ```
 
-## How Card Tracking Works
+## How It Works
+
+### Card Tracking
 
 Cards are identified by a hash of their content (file path + front + back). This means:
 - **Same content = same card** - Progress is preserved
 - **Content changes = new card** - If you edit a card significantly, it becomes a new card
 
-This design keeps the system simple and predictable. The database is stored in your notes directory (`.flashcards.db`) so you can sync it with git across devices.
+The database is stored in your notes directory (`.flashcards.db`) so you can sync it with git across devices.
+
+### Learning Phase
+
+New cards go through a learning phase with short intervals (1 min → 10 min → 1 hour by default) before graduating to the regular review schedule. During a session:
+
+- **New cards** may reappear within the same session if due within 30 minutes
+- This is intentional - it helps you learn new material before spacing it out
+- Once a card "graduates," it follows the longer spaced repetition schedule
+
+### Spaced Repetition
+
+The algorithm adjusts intervals based on your answers:
+- **Correct**: Interval increases (card becomes easier)
+- **Wrong**: Card returns to learning phase with short intervals
+
+Target retention is configurable (default 85%) - higher targets mean shorter intervals.
 
 ## Telescope Integration
 

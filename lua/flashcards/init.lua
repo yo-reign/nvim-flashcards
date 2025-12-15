@@ -138,9 +138,10 @@ function M._show_tag_picker()
 
     db.init()
 
-    -- Get tag counts with due card information
+    -- Get total counts and due counts
     local tag_counts = db.count_by_tag()
     local due_counts = db.count_due()
+    local due_by_tag = db.count_due_by_tag()
 
     -- Build options list
     local options = {}
@@ -149,23 +150,30 @@ function M._show_tag_picker()
     table.insert(options, {
         label = "All cards",
         tag = nil,
-        count = due_counts.total or 0,
+        total = due_counts.total or 0,
+        due = due_counts.total or 0,
     })
 
-    -- Add tags sorted by count
+    -- Add tags sorted by due count (most urgent first)
     local sorted_tags = {}
-    for tag, count in pairs(tag_counts) do
-        table.insert(sorted_tags, { tag = tag, count = count })
+    for tag, total in pairs(tag_counts) do
+        local due = due_by_tag[tag] or 0
+        table.insert(sorted_tags, { tag = tag, total = total, due = due })
     end
     table.sort(sorted_tags, function(a, b)
-        return a.count > b.count
+        -- Sort by due count first, then by total
+        if a.due ~= b.due then
+            return a.due > b.due
+        end
+        return a.total > b.total
     end)
 
     for _, item in ipairs(sorted_tags) do
         table.insert(options, {
             label = "#" .. item.tag,
             tag = item.tag,
-            count = item.count,
+            total = item.total,
+            due = item.due,
         })
     end
 
@@ -175,10 +183,14 @@ function M._show_tag_picker()
         return
     end
 
-    -- Format options for vim.ui.select
+    -- Format options for vim.ui.select - emphasize due count
     local formatted = {}
     for _, opt in ipairs(options) do
-        table.insert(formatted, string.format("%s (%d cards)", opt.label, opt.count))
+        if opt.due > 0 then
+            table.insert(formatted, string.format("%s - %d due (%d total)", opt.label, opt.due, opt.total))
+        else
+            table.insert(formatted, string.format("%s - 0 due (%d total)", opt.label, opt.total))
+        end
     end
 
     vim.ui.select(formatted, {
@@ -186,6 +198,10 @@ function M._show_tag_picker()
     }, function(choice, idx)
         if choice and idx then
             local selected = options[idx]
+            if selected.due == 0 then
+                vim.notify("No cards due for this tag!", vim.log.levels.INFO)
+                return
+            end
             require("flashcards.ui.review").start(selected.tag)
         end
     end)

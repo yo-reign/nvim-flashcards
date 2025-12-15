@@ -514,6 +514,27 @@ function M.count_by_tag()
     return counts
 end
 
+--- Count due cards per tag
+---@return table Map of tag -> due_count
+function M.count_due_by_tag()
+    local now = utils.now()
+
+    local query = "SELECT ct.tag, COUNT(*) as count "
+        .. "FROM card_tags ct "
+        .. "JOIN card_states cs ON ct.card_id = cs.card_id "
+        .. string.format("WHERE cs.due_date <= %d ", now)
+        .. "GROUP BY ct.tag "
+        .. "ORDER BY count DESC"
+
+    local results = safe_eval(query)
+
+    local counts = {}
+    for _, row in ipairs(results) do
+        counts[row.tag] = row.count
+    end
+    return counts
+end
+
 -- =============================================================================
 -- Review History
 -- =============================================================================

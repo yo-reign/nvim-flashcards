@@ -1,7 +1,7 @@
 -- Markdown parser for extracting flashcards
 -- Supports multiple card formats:
 -- 1. Inline: "front :: back #tags"
--- 2. Fenced: ```card ... --- ... ```
+-- 2. Fenced: :::card ... --- ... ::: #tags
 -- 3. Custom delimiters: ??? ... --- ... ???
 
 local M = {}
@@ -134,7 +134,8 @@ function M.parse_inline(file_path, content, opts)
     return cards
 end
 
---- Parse fenced code block cards (```card ... --- ... ```)
+--- Parse fenced cards (:::card ... --- ... ::: #tags)
+--- Uses ::: fence which doesn't conflict with code blocks inside cards
 ---@param file_path string File path
 ---@param content string File content
 ---@param opts table Pattern options
@@ -143,45 +144,74 @@ function M.parse_fenced(file_path, content, opts)
     local cards = {}
     local fence_type = opts.fence or "card"
 
-    -- Pattern to match fenced card blocks
-    -- Matches: ```card\n...\n```
-    local pattern = "```" .. fence_type .. "\n(.-)\n```"
+    -- Parse line by line to handle ::: fences properly
+    local lines_arr = utils.lines(content)
+    local i = 1
 
-    local lines = utils.lines(content)
-    local current_pos = 1
+    while i <= #lines_arr do
+        local line = lines_arr[i]
 
-    for block in content:gmatch(pattern) do
-        -- Find line number for this block
-        local block_start = content:find("```" .. fence_type .. "\n" .. utils.escape_pattern(block:sub(1, math.min(50, #block))), current_pos, true)
-        local line_num = 1
-        if block_start then
-            line_num = select(2, content:sub(1, block_start):gsub("\n", "\n")) + 1
-            current_pos = block_start + 1
-        end
+        -- Look for opening :::card
+        local opener = line:match("^%s*:::%s*" .. fence_type .. "%s*$")
+        if opener then
+            local start_line = i
+            local block_lines = {}
+            local closing_tags = {}
+            i = i + 1
 
-        -- Split on separator (---)
-        local front, back = block:match("^(.-)%s*\n%-%-%-%s*\n(.*)$")
+            -- Collect lines until closing :::
+            while i <= #lines_arr do
+                local current = lines_arr[i]
 
-        if front and back then
-            front = utils.trim(front)
+                -- Check for closing ::: with optional tags
+                local close_match, tags_str = current:match("^%s*:::%s*(.*)$")
+                if close_match ~= nil then
+                    -- Extract tags from closing line
+                    if tags_str and #tags_str > 0 then
+                        closing_tags = utils.parse_tags(tags_str)
+                    end
+                    break
+                end
 
-            -- Extract tags from back
-            local tags = utils.parse_tags(back)
-            back = utils.strip_tags(back)
-            back = utils.trim(back)
+                table.insert(block_lines, current)
+                i = i + 1
+            end
 
-            if #front > 0 and #back > 0 then
-                local card = {
-                    id = utils.generate_card_id(file_path, front, back),
-                    file_path = file_path,
-                    line_number = line_num,
-                    front = front,
-                    back = back,
-                    tags = tags,
-                }
-                table.insert(cards, card)
+            -- Process the block if we found content
+            if #block_lines > 0 then
+                local block = table.concat(block_lines, "\n")
+
+                -- Split on separator (---)
+                local front, back = block:match("^(.-)%s*\n%-%-%-%s*\n(.*)$")
+
+                if front and back then
+                    front = utils.trim(front)
+                    back = utils.trim(back)
+
+                    -- Use tags from closing line, or extract from back content as fallback
+                    local tags = closing_tags
+                    if #tags == 0 then
+                        tags = utils.parse_tags(back)
+                        back = utils.strip_tags(back)
+                        back = utils.trim(back)
+                    end
+
+                    if #front > 0 and #back > 0 then
+                        local card = {
+                            id = utils.generate_card_id(file_path, front, back),
+                            file_path = file_path,
+                            line_number = start_line,
+                            front = front,
+                            back = back,
+                            tags = tags,
+                        }
+                        table.insert(cards, card)
+                    end
+                end
             end
         end
+
+        i = i + 1
     end
 
     return cards
