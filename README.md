@@ -28,7 +28,7 @@ A Neovim plugin for markdown-based spaced repetition flashcards using a simplifi
 
 ```lua
 {
-    "your-username/nvim-flashcards",
+    "yo-reign/nvim-flashcards",
     dependencies = {
         "nvim-lua/plenary.nvim",
         "MunifTanjim/nui.nvim",
@@ -50,7 +50,7 @@ A Neovim plugin for markdown-based spaced repetition flashcards using a simplifi
 
 ```lua
 use {
-    "your-username/nvim-flashcards",
+    "yo-reign/nvim-flashcards",
     requires = {
         "nvim-lua/plenary.nvim",
         "MunifTanjim/nui.nvim",
@@ -112,7 +112,7 @@ def reverse(s):
 
 ### Multi-line Cards (Custom Delimiters)
 
-```markdown
+````markdown
 ???
 Explain the difference between `let` and `const` in JavaScript.
 ---
@@ -128,7 +128,7 @@ y = 2; // Error!
 ```
 #javascript
 ???
-```
+````
 
 ## Tags
 

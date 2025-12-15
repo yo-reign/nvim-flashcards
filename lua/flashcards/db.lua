@@ -80,15 +80,13 @@ function M.init(dir)
         daily_stats = schema.daily_stats,
     })
 
-    -- Create indexes for performance
-    db:execute([[
-        CREATE INDEX IF NOT EXISTS idx_cards_file ON cards(file_path);
-        CREATE INDEX IF NOT EXISTS idx_states_due ON card_states(due_date);
-        CREATE INDEX IF NOT EXISTS idx_states_state ON card_states(state);
-        CREATE INDEX IF NOT EXISTS idx_tags_tag ON card_tags(tag);
-        CREATE INDEX IF NOT EXISTS idx_tags_card ON card_tags(card_id);
-        CREATE INDEX IF NOT EXISTS idx_reviews_card ON reviews(card_id);
-    ]])
+    -- Create indexes for performance (must be separate statements)
+    pcall(function() db:execute("CREATE INDEX IF NOT EXISTS idx_cards_file ON cards(file_path)") end)
+    pcall(function() db:execute("CREATE INDEX IF NOT EXISTS idx_states_due ON card_states(due_date)") end)
+    pcall(function() db:execute("CREATE INDEX IF NOT EXISTS idx_states_state ON card_states(state)") end)
+    pcall(function() db:execute("CREATE INDEX IF NOT EXISTS idx_tags_tag ON card_tags(tag)") end)
+    pcall(function() db:execute("CREATE INDEX IF NOT EXISTS idx_tags_card ON card_tags(card_id)") end)
+    pcall(function() db:execute("CREATE INDEX IF NOT EXISTS idx_reviews_card ON reviews(card_id)") end)
 
     return db
 end
@@ -212,7 +210,8 @@ end
 ---@return table List of cards
 function M.get_all_cards()
     local d = M.get()
-    return d.cards:get()
+    local result = d.cards:get()
+    return result or {}
 end
 
 --- Get cards from a specific file
@@ -220,7 +219,8 @@ end
 ---@return table List of cards
 function M.get_cards_by_file(file_path)
     local d = M.get()
-    return d.cards:where({ file_path = file_path })
+    local result = d.cards:where({ file_path = file_path })
+    return result or {}
 end
 
 --- Delete all cards from a specific file
@@ -247,7 +247,10 @@ end
 function M.get_card_state(card_id)
     local d = M.get()
     local states = d.card_states:where({ card_id = card_id })
-    return states[1]
+    if states and #states > 0 then
+        return states[1]
+    end
+    return nil
 end
 
 --- Update card state after review
@@ -326,7 +329,8 @@ function M.get_due_cards(opts)
         query = query .. string.format(" LIMIT %d", opts.limit)
     end
 
-    return d:eval(query)
+    local result = d:eval(query)
+    return result or {}
 end
 
 --- Get new cards for today
@@ -347,7 +351,8 @@ function M.get_new_cards(limit)
         query = query .. string.format(" LIMIT %d", limit)
     end
 
-    return d:eval(query)
+    local result = d:eval(query)
+    return result or {}
 end
 
 --- Count cards by state
@@ -359,12 +364,14 @@ function M.count_by_state()
         SELECT state, COUNT(*) as count
         FROM card_states
         GROUP BY state
-    ]])
+    ]]) or {}
 
     local counts = { new = 0, learning = 0, review = 0, relearning = 0, total = 0 }
     for _, row in ipairs(results) do
-        counts[row.state] = row.count
-        counts.total = counts.total + row.count
+        if row.state then
+            counts[row.state] = row.count
+            counts.total = counts.total + row.count
+        end
     end
 
     return counts
@@ -416,7 +423,7 @@ end
 ---@return table List of tags
 function M.get_card_tags(card_id)
     local d = M.get()
-    local rows = d.card_tags:where({ card_id = card_id })
+    local rows = d.card_tags:where({ card_id = card_id }) or {}
 
     local tags = {}
     for _, row in ipairs(rows) do
@@ -432,7 +439,7 @@ function M.get_all_tags()
 
     local results = d:eval([[
         SELECT DISTINCT tag FROM card_tags ORDER BY tag
-    ]])
+    ]]) or {}
 
     local tags = {}
     for _, row in ipairs(results) do
@@ -448,7 +455,7 @@ function M.get_cards_by_tag(tag)
     local d = M.get()
     local tag_escaped = tag:gsub("'", "''")
 
-    return d:eval(string.format([[
+    local result = d:eval(string.format([[
         SELECT DISTINCT c.*, cs.state, cs.stability, cs.difficulty, cs.due_date
         FROM cards c
         JOIN card_states cs ON c.id = cs.card_id
@@ -456,6 +463,7 @@ function M.get_cards_by_tag(tag)
         WHERE ct.tag = '%s' OR ct.tag LIKE '%s/%%'
         ORDER BY c.file_path, c.line_number
     ]], tag_escaped, tag_escaped))
+    return result or {}
 end
 
 --- Count cards per tag
@@ -468,7 +476,7 @@ function M.count_by_tag()
         FROM card_tags
         GROUP BY tag
         ORDER BY count DESC
-    ]])
+    ]]) or {}
 
     local counts = {}
     for _, row in ipairs(results) do
@@ -523,7 +531,8 @@ function M.get_reviews(card_id, limit)
         query = query .. string.format(" LIMIT %d", limit)
     end
 
-    return d:eval(query)
+    local result = d:eval(query)
+    return result or {}
 end
 
 --- Update daily statistics
@@ -533,7 +542,7 @@ function M.update_daily_stats(review)
     local date = os.date("%Y-%m-%d", review.reviewed_at or utils.now())
 
     -- Check if entry exists
-    local existing = d.daily_stats:where({ date = date })
+    local existing = d.daily_stats:where({ date = date }) or {}
 
     -- Binary rating: 1=Wrong, 2=Correct
     local rating_field = review.rating == 2 and "correct_count" or "wrong_count"
@@ -572,11 +581,12 @@ end
 function M.get_daily_stats(from_date, to_date)
     local d = M.get()
 
-    return d:eval(string.format([[
+    local result = d:eval(string.format([[
         SELECT * FROM daily_stats
         WHERE date >= '%s' AND date <= '%s'
         ORDER BY date ASC
     ]], from_date, to_date))
+    return result or {}
 end
 
 --- Get overall statistics
@@ -587,15 +597,16 @@ function M.get_stats()
     local card_counts = M.count_by_state()
     local due_counts = M.count_due()
 
-    -- Get total reviews
-    local review_stats = d:eval([[
+    -- Get total reviews (binary: rating 2 = correct, rating 1 = wrong)
+    local review_results = d:eval([[
         SELECT
             COUNT(*) as total_reviews,
             AVG(elapsed_ms) as avg_time_ms,
-            SUM(CASE WHEN rating >= 3 THEN 1 ELSE 0 END) as correct,
-            SUM(CASE WHEN rating < 3 THEN 1 ELSE 0 END) as wrong
+            SUM(CASE WHEN rating = 2 THEN 1 ELSE 0 END) as correct,
+            SUM(CASE WHEN rating = 1 THEN 1 ELSE 0 END) as wrong
         FROM reviews
-    ]])[1]
+    ]]) or {}
+    local review_stats = review_results[1] or { total_reviews = 0, avg_time_ms = 0, correct = 0, wrong = 0 }
 
     -- Get streak (consecutive days with reviews)
     local streak_query = [[
@@ -603,7 +614,7 @@ function M.get_stats()
         WHERE review_count > 0 OR new_count > 0
         ORDER BY date DESC
     ]]
-    local dates = d:eval(streak_query)
+    local dates = d:eval(streak_query) or {}
 
     local streak = 0
     local today = os.date("%Y-%m-%d")
@@ -614,12 +625,15 @@ function M.get_stats()
             streak = streak + 1
             -- Calculate previous day
             local y, m, day = check_date:match("(%d+)-(%d+)-(%d+)")
-            local timestamp = os.time({ year = y, month = m, day = day }) - 86400
+            local timestamp = os.time({ year = tonumber(y), month = tonumber(m), day = tonumber(day) }) - 86400
             check_date = os.date("%Y-%m-%d", timestamp)
         else
             break
         end
     end
+
+    local total_reviews = review_stats.total_reviews or 0
+    local correct = review_stats.correct or 0
 
     return {
         total_cards = card_counts.total,
@@ -630,10 +644,10 @@ function M.get_stats()
         due_learning = due_counts.learning or 0,
         due_review = due_counts.review or 0,
         due_total = due_counts.total or 0,
-        total_reviews = review_stats.total_reviews or 0,
+        total_reviews = total_reviews,
         avg_time_ms = review_stats.avg_time_ms or 0,
-        retention_rate = review_stats.total_reviews > 0
-            and (review_stats.correct / review_stats.total_reviews * 100)
+        retention_rate = total_reviews > 0
+            and (correct / total_reviews * 100)
             or 0,
         streak = streak,
     }
