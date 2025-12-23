@@ -204,10 +204,12 @@ require("flashcards").setup({
     -- Directories to scan for cards
     directories = { "~/notes" },
 
-    -- Database location (two options):
-    -- Option 1: Custom path (single centralized db)
-    db_path = "~/.local/share/nvim/flashcards.db",
-    -- Option 2: Leave db_path nil, use db_filename in each directory (default)
+    -- Database location (pick one):
+    -- Option 1: Directory path (db_filename will be appended)
+    db_path = "~/notes/assets/",
+    -- Option 2: Full file path
+    -- db_path = "~/.local/share/nvim/flashcards.db",
+    -- Option 3: Leave nil, uses db_filename in each configured directory (default)
     -- db_path = nil,
     -- db_filename = ".flashcards.db",
 

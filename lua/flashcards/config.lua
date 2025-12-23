@@ -8,8 +8,9 @@ M.defaults = {
     directories = {},
 
     -- Database location options:
-    -- Option 1: Set db_path for a custom absolute path (e.g., "~/.local/share/nvim/flashcards.db")
-    -- Option 2: Leave db_path nil and db_filename will be used in each configured directory
+    -- Option 1: Set db_path to a directory (e.g., "~/notes/assets/") - db_filename will be appended
+    -- Option 2: Set db_path to a full file path (e.g., "~/.local/share/nvim/flashcards.db")
+    -- Option 3: Leave db_path nil and db_filename will be used in each configured directory
     db_path = nil,
 
     -- Database filename (stored in each configured directory when db_path is nil)
@@ -186,7 +187,12 @@ end
 function M.get_db_path(dir)
     -- If custom db_path is set, always use it (single centralized db)
     if M.options.db_path then
-        return M.options.db_path
+        local db_path = M.options.db_path
+        -- If db_path is a directory (ends with / or is an existing dir), append db_filename
+        if db_path:sub(-1) == "/" or vim.fn.isdirectory(db_path) == 1 then
+            return vim.fs.joinpath(db_path, M.options.db_filename)
+        end
+        return db_path
     end
 
     if dir then
@@ -206,7 +212,7 @@ end
 function M.get_all_db_paths()
     -- If custom db_path is set, return just that single path
     if M.options.db_path then
-        return { M.options.db_path }
+        return { M.get_db_path() }
     end
 
     local paths = {}
