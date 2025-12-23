@@ -405,8 +405,12 @@ require("flashcards").setup({
         "~/notes",
     },
 
-    -- Database stored in directory for easy git sync
-    db_filename = ".flashcards.db",
+    -- Database location (two options):
+    -- Option 1: Custom path (single centralized db)
+    db_path = "~/.local/share/nvim/flashcards.db",
+    -- Option 2: Leave db_path nil, use db_filename in each directory (default)
+    -- db_path = nil,
+    -- db_filename = ".flashcards.db",
 
     -- FSRS parameters with binary rating
     fsrs = {

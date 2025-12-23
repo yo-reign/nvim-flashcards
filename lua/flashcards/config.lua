@@ -7,7 +7,12 @@ M.defaults = {
     -- Directories to scan for cards (user must set at least one)
     directories = {},
 
-    -- Database filename (stored in each configured directory)
+    -- Database location options:
+    -- Option 1: Set db_path for a custom absolute path (e.g., "~/.local/share/nvim/flashcards.db")
+    -- Option 2: Leave db_path nil and db_filename will be used in each configured directory
+    db_path = nil,
+
+    -- Database filename (stored in each configured directory when db_path is nil)
     db_filename = ".flashcards.db",
 
     -- Card detection patterns
@@ -159,6 +164,11 @@ function M.setup(opts)
         M.options.directories[i] = vim.fn.expand(dir)
     end
 
+    -- Expand custom db_path if set
+    if M.options.db_path then
+        M.options.db_path = vim.fn.expand(M.options.db_path)
+    end
+
     -- Setup highlight groups
     M._setup_highlights()
 end
@@ -171,9 +181,14 @@ function M._setup_highlights()
 end
 
 --- Get database path for a directory
----@param dir string|nil Directory (uses first configured if nil)
+---@param dir string|nil Directory (uses first configured if nil, ignored if db_path is set)
 ---@return string Database file path
 function M.get_db_path(dir)
+    -- If custom db_path is set, always use it (single centralized db)
+    if M.options.db_path then
+        return M.options.db_path
+    end
+
     if dir then
         return vim.fs.joinpath(dir, M.options.db_filename)
     end
@@ -186,9 +201,14 @@ function M.get_db_path(dir)
     return vim.fs.joinpath(vim.fn.getcwd(), M.options.db_filename)
 end
 
---- Get all database paths (one per directory)
+--- Get all database paths (one per directory, or single path if db_path is set)
 ---@return table List of database paths
 function M.get_all_db_paths()
+    -- If custom db_path is set, return just that single path
+    if M.options.db_path then
+        return { M.options.db_path }
+    end
+
     local paths = {}
     for _, dir in ipairs(M.options.directories) do
         table.insert(paths, vim.fs.joinpath(dir, M.options.db_filename))

@@ -204,8 +204,12 @@ require("flashcards").setup({
     -- Directories to scan for cards
     directories = { "~/notes" },
 
-    -- Database is stored in the first directory for easy git sync
-    db_filename = ".flashcards.db",
+    -- Database location (two options):
+    -- Option 1: Custom path (single centralized db)
+    db_path = "~/.local/share/nvim/flashcards.db",
+    -- Option 2: Leave db_path nil, use db_filename in each directory (default)
+    -- db_path = nil,
+    -- db_filename = ".flashcards.db",
 
     -- FSRS algorithm settings
     fsrs = {
@@ -253,7 +257,7 @@ Cards are identified by a unique ID stored as a markdown comment (e.g., `<!-- fc
 - **Stable identity** - As long as the ID comment stays, the card keeps its progress
 - **Git-friendly** - IDs are visible in your notes and sync naturally
 
-The database is stored in your notes directory (`.flashcards.db`) so you can sync it with git across devices.
+By default, the database is stored in your notes directory (`.flashcards.db`) so you can sync it with git across devices. Alternatively, set `db_path` to store the database in a custom location (e.g., `~/.local/share/nvim/flashcards.db`).
 
 ### Learning Phase
 
