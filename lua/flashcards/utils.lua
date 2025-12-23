@@ -96,23 +96,25 @@ function M.tags_from_path(filepath)
     -- Remove file extension
     local path_no_ext = filepath:gsub("%.[^%.]+$", "")
 
-    -- Convert path separators to tag format
-    local tag = path_no_ext:gsub("/", "/"):gsub("\\", "/")
+    -- Normalize path separators and remove leading/trailing slashes
+    local tag = path_no_ext:gsub("\\", "/"):gsub("^/+", ""):gsub("/+$", "")
 
     -- Generate hierarchical tags
     local tags = {}
-    local parts = vim.split(tag, "/", { plain = true })
+    local parts = vim.split(tag, "/", { plain = true, trimempty = true })
 
     local current = ""
     for i, part in ipairs(parts) do
-        if i == 1 then
-            current = part
-        else
-            current = current .. "/" .. part
-        end
-        -- Don't add the filename itself as a separate tag if it matches parent
-        if i < #parts or parts[i] ~= parts[#parts - 1] then
-            table.insert(tags, current)
+        if part ~= "" then
+            if current == "" then
+                current = part
+            else
+                current = current .. "/" .. part
+            end
+            -- Don't add the filename itself as a separate tag if it matches parent
+            if i < #parts or (i > 1 and parts[i] ~= parts[i - 1]) or i == 1 then
+                table.insert(tags, current)
+            end
         end
     end
 
