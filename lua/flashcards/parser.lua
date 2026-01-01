@@ -1,7 +1,7 @@
 -- Markdown parser for extracting flashcards
 -- Supports multiple card formats:
 -- 1. Inline: "front ::: back #tags" (normal) or "front :?: back #tags" (reversible)
--- 2. Fenced: :::card ... --- ... ::: #tags
+-- 2. Fenced: :::card ... :-: ... ::: #tags (normal) or :?:card ... :-: ... :?: #tags (reversible)
 
 local M = {}
 
@@ -139,8 +139,9 @@ function M.parse_inline(file_path, content, opts)
     return cards
 end
 
---- Parse fenced cards (:::card <!-- fc:id --> ... --- ... ::: #tags)
---- Uses ::: fence which doesn't conflict with code blocks inside cards
+--- Parse fenced cards
+--- Normal: :::card <!-- fc:id --> ... :-: ... ::: #tags
+--- Reversible: :?:card <!-- fc:id --> ... :-: ... :?: #tags
 ---@param file_path string File path
 ---@param content string File content
 ---@param opts table Pattern options
@@ -149,15 +150,22 @@ function M.parse_fenced(file_path, content, opts)
     local cards = {}
     local fence_type = opts.fence or "card"
 
-    -- Parse line by line to handle ::: fences properly
+    -- Parse line by line to handle fences properly
     local lines_arr = utils.lines(content)
     local i = 1
 
     while i <= #lines_arr do
         local line = lines_arr[i]
 
-        -- Look for opening :::card (with optional ID comment)
-        local opener = line:match("^%s*:::%s*" .. fence_type)
+        -- Look for opening :::card or :?:card (with optional ID comment)
+        local is_reversible = false
+        local opener = line:match("^%s*:%?:%s*" .. fence_type)
+        if opener then
+            is_reversible = true
+        else
+            opener = line:match("^%s*:::%s*" .. fence_type)
+        end
+
         if opener then
             local start_line = i
             local block_lines = {}
@@ -168,14 +176,15 @@ function M.parse_fenced(file_path, content, opts)
 
             i = i + 1
 
-            -- Collect lines until closing :::
+            -- Collect lines until closing ::: or :?:
             while i <= #lines_arr do
                 local current = lines_arr[i]
 
-                -- Check for closing ::: with optional tags
-                if current:match("^%s*:::") then
-                    -- Extract everything after ::: as potential tags
-                    local tags_str = current:match("^%s*:::%s*(.*)$")
+                -- Check for closing ::: or :?: with optional tags
+                local closing_match = current:match("^%s*:::%s*(.*)$") or current:match("^%s*:%?:%s*(.*)$")
+                if current:match("^%s*:::") or current:match("^%s*:%?:") then
+                    -- Extract everything after closing fence as potential tags
+                    local tags_str = closing_match
                     if tags_str and #tags_str > 0 then
                         closing_tags = utils.parse_tags(tags_str)
                     end
@@ -190,8 +199,8 @@ function M.parse_fenced(file_path, content, opts)
             if #block_lines > 0 then
                 local block = table.concat(block_lines, "\n")
 
-                -- Split on separator (---)
-                local front, back = block:match("^(.-)%s*\n%-%-%-%s*\n(.*)$")
+                -- Split on separator (:-:)
+                local front, back = block:match("^(.-)%s*\n:%-:%s*\n(.*)$")
 
                 if front and back then
                     front = utils.trim(front)
@@ -213,7 +222,7 @@ function M.parse_fenced(file_path, content, opts)
                             front = front,
                             back = back,
                             tags = tags,
-                            reversible = false,  -- Fenced cards are always normal
+                            reversible = is_reversible,
                             needs_id_write = existing_id == nil,
                         }
                         table.insert(cards, card)

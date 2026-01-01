@@ -109,7 +109,7 @@ When reviewing, a `↔` indicator shows in the header if the card is reversed.
 
 ### Multi-line Cards (Fenced)
 
-Uses `:::card` fences which don't conflict with code blocks inside:
+Uses `:::card` fences which don't conflict with code blocks inside. Use `:-:` to separate front from back:
 
 ```markdown
 :::card
@@ -121,7 +121,7 @@ def reverse(s):
         return s
     return reverse(s[1:]) + s[0]
 ```
----
+:-:
 It reverses a string using recursion.
 ::: #python #recursion
 ```
@@ -132,6 +132,18 @@ After scanning, an ID is added to the opening line:
 ```
 
 Tags go on the closing `:::` line.
+
+### Reversible Multi-line Cards
+
+Use `:?:card` instead of `:::card` for reversible fenced cards:
+
+```markdown
+:?:card
+Term or concept here
+:-:
+Definition or explanation here
+:?: #vocabulary
+```
 
 ## Tags
 

@@ -90,9 +90,9 @@ Term :?: Definition #vocabulary
 <!-- During review, if reversed, the header shows ↔ indicator -->
 ```
 
-### Multi-line Cards (Fenced with :::)
+### Multi-line Cards (Fenced)
 
-Uses `:::card` fences which don't conflict with code blocks inside:
+Uses `:::card` fences which don't conflict with code blocks inside. Use `:-:` to separate front from back:
 
 ```markdown
 :::card <!-- fc:x9y8z7w6 -->
@@ -104,12 +104,24 @@ def reverse(s):
         return s
     return reverse(s[1:]) + s[0]
 ```
----
+:-:
 It reverses a string using recursion.
 ::: #python #recursion
 ```
 
 Tags go on the closing `:::` line.
+
+### Reversible Multi-line Cards
+
+Use `:?:card` instead of `:::card` for reversible fenced cards (50% chance of showing back first):
+
+```markdown
+:?:card <!-- fc:abc12345 -->
+Term or concept here
+:-:
+Definition or explanation here
+:?: #vocabulary
+```
 
 ## Tag System
 

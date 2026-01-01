@@ -23,10 +23,10 @@ M.defaults = {
             enabled = true,
             -- Note: separator is now hardcoded to ::: and :?: in parser
         },
-        -- Fenced block pattern: :::card ... --- ... ::: #tags
+        -- Fenced block pattern: :::card ... :-: ... ::: #tags (or :?:card for reversible)
         fenced = {
             enabled = true,
-            fence = "card",  -- Used with ::: (e.g., :::card)
+            fence = "card",  -- Used with ::: or :?: (e.g., :::card, :?:card)
         },
     },
 
