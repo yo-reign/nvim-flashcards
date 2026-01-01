@@ -20,10 +20,16 @@ local function create_tables(database)
             line_number INTEGER,
             front TEXT NOT NULL,
             back TEXT NOT NULL,
+            reversible INTEGER DEFAULT 0,
             created_at INTEGER,
             updated_at INTEGER
         )
     ]])
+
+    -- Migration: add reversible column if it doesn't exist
+    pcall(function()
+        database:execute("ALTER TABLE cards ADD COLUMN reversible INTEGER DEFAULT 0")
+    end)
 
     database:execute([[
         CREATE TABLE IF NOT EXISTS card_states (
@@ -152,11 +158,12 @@ end
 -- =============================================================================
 
 --- Insert or update a card
----@param card table Card data {id, file_path, line_number, front, back, tags}
+---@param card table Card data {id, file_path, line_number, front, back, tags, reversible}
 ---@return boolean Success
 function M.upsert_card(card)
     local now = utils.now()
     local d = M.get()
+    local reversible = card.reversible and 1 or 0
 
     -- Check if card exists using raw SQL (more reliable)
     local card_id_escaped = card.id:gsub("'", "''")
@@ -168,23 +175,25 @@ function M.upsert_card(card)
     if #existing > 0 then
         -- Update existing card
         d:execute(string.format(
-            "UPDATE cards SET file_path = '%s', line_number = %d, front = '%s', back = '%s', updated_at = %d WHERE id = '%s'",
+            "UPDATE cards SET file_path = '%s', line_number = %d, front = '%s', back = '%s', reversible = %d, updated_at = %d WHERE id = '%s'",
             card.file_path:gsub("'", "''"),
             card.line_number or 0,
             card.front:gsub("'", "''"),
             card.back:gsub("'", "''"),
+            reversible,
             now,
             card_id_escaped
         ))
     else
         -- Insert new card
         d:execute(string.format(
-            "INSERT INTO cards (id, file_path, line_number, front, back, created_at, updated_at) VALUES ('%s', '%s', %d, '%s', '%s', %d, %d)",
+            "INSERT INTO cards (id, file_path, line_number, front, back, reversible, created_at, updated_at) VALUES ('%s', '%s', %d, '%s', '%s', %d, %d, %d)",
             card_id_escaped,
             card.file_path:gsub("'", "''"),
             card.line_number or 0,
             card.front:gsub("'", "''"),
             card.back:gsub("'", "''"),
+            reversible,
             now,
             now
         ))

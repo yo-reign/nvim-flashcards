@@ -1,8 +1,7 @@
 -- Markdown parser for extracting flashcards
 -- Supports multiple card formats:
--- 1. Inline: "front :: back #tags"
+-- 1. Inline: "front ::: back #tags" (normal) or "front :?: back #tags" (reversible)
 -- 2. Fenced: :::card ... --- ... ::: #tags
--- 3. Custom delimiters: ??? ... --- ... ???
 
 local M = {}
 
@@ -17,6 +16,7 @@ local utils = require("flashcards.utils")
 ---@field front string Front content (question)
 ---@field back string Back content (answer)
 ---@field tags table List of tags
+---@field reversible boolean If true, 50% chance of showing back first
 
 --- Parse a single markdown file for cards
 ---@param file_path string Path to markdown file
@@ -31,7 +31,7 @@ function M.parse_file(file_path, content)
     local cards = {}
     local opts = config.options.patterns
 
-    -- Parse inline cards
+    -- Parse inline cards (both ::: and :?: separators)
     if opts.inline.enabled then
         local inline_cards = M.parse_inline(file_path, content, opts.inline)
         vim.list_extend(cards, inline_cards)
@@ -41,12 +41,6 @@ function M.parse_file(file_path, content)
     if opts.fenced.enabled then
         local fenced_cards = M.parse_fenced(file_path, content, opts.fenced)
         vim.list_extend(cards, fenced_cards)
-    end
-
-    -- Parse custom delimiter cards
-    if opts.custom.enabled then
-        local custom_cards = M.parse_custom(file_path, content, opts.custom)
-        vim.list_extend(cards, custom_cards)
     end
 
     -- Add implicit tags from file path
@@ -81,16 +75,14 @@ function M.find_base_directory(file_path)
     return nil
 end
 
---- Parse inline cards (single line: "front :: back #tags <!-- fc:id -->")
+--- Parse inline cards (single line: "front ::: back #tags" or "front :?: back #tags")
+--- ::: = normal card, :?: = reversible (50% chance of showing back first)
 ---@param file_path string File path
 ---@param content string File content
 ---@param opts table Pattern options
 ---@return Card[] Cards
 function M.parse_inline(file_path, content, opts)
     local cards = {}
-    local separator = opts.separator or "::"
-    local sep_escaped = utils.escape_pattern(separator)
-
     local lines = utils.lines(content)
 
     for line_num, line in ipairs(lines) do
@@ -99,13 +91,20 @@ function M.parse_inline(file_path, content, opts)
             goto continue
         end
 
-        -- Skip lines that start with code block markers
-        if line:match("^%s*```") or line:match("^%s*~~~") then
+        -- Skip lines that start with code block markers or fenced card markers
+        if line:match("^%s*```") or line:match("^%s*~~~") or line:match("^%s*:::") then
             goto continue
         end
 
-        -- Look for separator
-        local front, back = line:match("^(.-)%s*" .. sep_escaped .. "%s*(.+)$")
+        -- Try to match reversible separator first (:?:), then normal (:::)
+        local front, back, reversible
+        front, back = line:match("^(.-)%s*:%?:%s*(.+)$")
+        if front and back then
+            reversible = true
+        else
+            front, back = line:match("^(.-)%s*:::%s*(.+)$")
+            reversible = false
+        end
 
         if front and back and #utils.trim(front) > 0 then
             front = utils.trim(front)
@@ -127,6 +126,7 @@ function M.parse_inline(file_path, content, opts)
                     front = front,
                     back = back_clean,
                     tags = tags,
+                    reversible = reversible,
                     needs_id_write = existing_id == nil,
                 }
                 table.insert(cards, card)
@@ -213,6 +213,7 @@ function M.parse_fenced(file_path, content, opts)
                             front = front,
                             back = back,
                             tags = tags,
+                            reversible = false,  -- Fenced cards are always normal
                             needs_id_write = existing_id == nil,
                         }
                         table.insert(cards, card)
@@ -222,57 +223,6 @@ function M.parse_fenced(file_path, content, opts)
         end
 
         i = i + 1
-    end
-
-    return cards
-end
-
---- Parse custom delimiter cards (??? ... --- ... ???)
----@param file_path string File path
----@param content string File content
----@param opts table Pattern options
----@return Card[] Cards
-function M.parse_custom(file_path, content, opts)
-    local cards = {}
-    local delimiter = opts.delimiter or "???"
-    local separator = opts.separator or "---"
-
-    local delim_escaped = utils.escape_pattern(delimiter)
-    local sep_escaped = utils.escape_pattern(separator)
-
-    -- Pattern: delimiter\n...\nseparator\n...\ndelimiter
-    local pattern = delim_escaped .. "\n(.-)\n" .. sep_escaped .. "\n(.-)\n" .. delim_escaped
-
-    local lines = utils.lines(content)
-    local current_pos = 1
-
-    for front, back in content:gmatch(pattern) do
-        -- Find line number for this block
-        local block_start = content:find(delimiter .. "\n" .. utils.escape_pattern(front:sub(1, math.min(30, #front))), current_pos, true)
-        local line_num = 1
-        if block_start then
-            line_num = select(2, content:sub(1, block_start):gsub("\n", "\n")) + 1
-            current_pos = block_start + 1
-        end
-
-        front = utils.trim(front)
-
-        -- Extract tags from back
-        local tags = utils.parse_tags(back)
-        back = utils.strip_tags(back)
-        back = utils.trim(back)
-
-        if #front > 0 and #back > 0 then
-            local card = {
-                id = utils.generate_card_id(file_path, front, back),
-                file_path = file_path,
-                line_number = line_num,
-                front = front,
-                back = back,
-                tags = tags,
-            }
-            table.insert(cards, card)
-        end
     end
 
     return cards

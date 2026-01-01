@@ -74,7 +74,7 @@ use {
 
 2. Create cards in your markdown files:
    ```markdown
-   What is a closure? :: A function that captures variables from its enclosing scope #programming
+   What is a closure? ::: A function that captures variables from its enclosing scope #programming
    ```
 
 3. Start a review session:
@@ -89,13 +89,23 @@ use {
 ### Inline Cards
 
 ```markdown
-Question text :: Answer text #tag1 #tag2
+Question text ::: Answer text #tag1 #tag2
 ```
 
 After scanning, an ID comment is automatically added:
 ```markdown
-Question text :: Answer text #tag1 #tag2 <!-- fc:abc12345 -->
+Question text ::: Answer text #tag1 #tag2 <!-- fc:abc12345 -->
 ```
+
+### Reversible Cards
+
+Use `:?:` instead of `:::` for cards that can be shown in either direction (50% chance of showing the back as the question):
+
+```markdown
+Term :?: Definition #vocabulary
+```
+
+When reviewing, a `↔` indicator shows in the header if the card is reversed.
 
 ### Multi-line Cards (Fenced)
 
@@ -122,26 +132,6 @@ After scanning, an ID is added to the opening line:
 ```
 
 Tags go on the closing `:::` line.
-
-### Multi-line Cards (Custom Delimiters)
-
-````markdown
-???
-Explain the difference between `let` and `const` in JavaScript.
----
-- `let`: Block-scoped, can be reassigned
-- `const`: Block-scoped, cannot be reassigned
-
-```javascript
-let x = 1;
-x = 2; // OK
-
-const y = 1;
-y = 2; // Error!
-```
-#javascript
-???
-````
 
 ## Tags
 

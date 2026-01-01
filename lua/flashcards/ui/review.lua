@@ -16,6 +16,7 @@ local state = {
     session = nil,
     popup = nil,
     showing_answer = false,
+    is_reversed = false,  -- For reversible cards: true if showing back as question
 }
 
 --- Create the review popup
@@ -138,6 +139,18 @@ end
 --- Apply syntax highlighting to the buffer
 ---@param bufnr integer Buffer number
 ---@param lines table Lines content
+--- Decide if a card should be shown reversed (for reversible cards)
+---@param card table The card to check
+---@return boolean True if should show reversed (back as question)
+local function should_reverse_card(card)
+    -- Only reversible cards can be reversed
+    if not card.reversible or card.reversible == 0 then
+        return false
+    end
+    -- 50% chance of reversing
+    return math.random() < 0.5
+end
+
 local function apply_highlights(bufnr, lines)
     local ns = vim.api.nvim_create_namespace("flashcards_review")
     vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
@@ -199,6 +212,14 @@ local function render_card()
     local lines = {}
     local icons = config.options.ui.icons
 
+    -- Determine front/back content based on reversible state
+    local display_front = card.front
+    local display_back = card.back
+    if state.is_reversed then
+        display_front = card.back
+        display_back = card.front
+    end
+
     -- Header line
     local progress = string.format(
         "%d/%d",
@@ -207,12 +228,14 @@ local function render_card()
     )
     local time = state.session:elapsed_time_str()
     local state_icon = icons and icons[card.state] or ""
-    local header = string.format("  %s %s    %s  %s", state_icon, fsrs.state_name(card.state), progress, time)
+    -- Add indicator if card is reversed
+    local reversed_indicator = state.is_reversed and " ↔" or ""
+    local header = string.format("  %s %s%s    %s  %s", state_icon, fsrs.state_name(card.state), reversed_indicator, progress, time)
     table.insert(lines, header)
     table.insert(lines, "")
 
     -- Card front (question) - add language labels for code blocks
-    local front_with_labels = add_language_labels(card.front)
+    local front_with_labels = add_language_labels(display_front)
     local front_lines = utils.lines(front_with_labels)
     for _, line in ipairs(front_lines) do
         table.insert(lines, "  " .. line)
@@ -225,7 +248,7 @@ local function render_card()
         table.insert(lines, "")
 
         -- Card back (answer) - add language labels for code blocks
-        local back_with_labels = add_language_labels(card.back)
+        local back_with_labels = add_language_labels(display_back)
         local back_lines = utils.lines(back_with_labels)
         for _, line in ipairs(back_lines) do
             table.insert(lines, "  " .. line)
@@ -366,6 +389,11 @@ function M.start(tag)
     -- Start with first card
     state.showing_answer = false
     state.session:next_card()
+    -- Decide if first card should be shown reversed
+    local first_card = state.session:current_card()
+    if first_card then
+        state.is_reversed = should_reverse_card(first_card)
+    end
     render_card()
 end
 
@@ -393,6 +421,11 @@ function M.answer(rating)
     if state.session:has_more() then
         state.showing_answer = false
         state.session:next_card()
+        -- Decide if next card should be shown reversed
+        local next_card = state.session:current_card()
+        if next_card then
+            state.is_reversed = should_reverse_card(next_card)
+        end
         render_card()
     else
         render_complete()
@@ -408,6 +441,11 @@ function M.skip()
     state.session:skip()
     state.showing_answer = false
     state.session:next_card()
+    -- Decide if next card should be shown reversed
+    local next_card = state.session:current_card()
+    if next_card then
+        state.is_reversed = should_reverse_card(next_card)
+    end
     render_card()
 end
 
@@ -463,6 +501,7 @@ function M.close()
     end
 
     state.showing_answer = false
+    state.is_reversed = false
 end
 
 --- Check if review is active

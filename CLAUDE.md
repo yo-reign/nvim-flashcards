@@ -61,7 +61,7 @@ nvim-flashcards/
 ### Card IDs
 
 Cards are identified by unique IDs stored as markdown comments. IDs are auto-generated when scanning:
-- Inline: `front :: back #tags <!-- fc:abc12345 -->`
+- Inline: `front ::: back #tags <!-- fc:abc12345 -->`
 - Fenced: `:::card <!-- fc:abc12345 -->`
 
 This allows editing card content without losing review history.
@@ -70,13 +70,24 @@ This allows editing card content without losing review history.
 
 ```markdown
 <!-- Basic card (ID will be added on scan) -->
-What is a closure? :: A function that captures variables from its enclosing scope
+What is a closure? ::: A function that captures variables from its enclosing scope
 
 <!-- With tags -->
-What is a monad? :: A design pattern for chaining operations #haskell #fp
+What is a monad? ::: A design pattern for chaining operations #haskell #fp
 
 <!-- After scanning, IDs are added automatically -->
-What is a closure? :: A function that captures variables from its enclosing scope <!-- fc:a1b2c3d4 -->
+What is a closure? ::: A function that captures variables from its enclosing scope <!-- fc:a1b2c3d4 -->
+```
+
+### Reversible Cards
+
+Use `:?:` instead of `:::` for cards where either side can appear as the question (50% chance):
+
+```markdown
+<!-- Reversible card - can show "Term" or "Definition" as the question -->
+Term :?: Definition #vocabulary
+
+<!-- During review, if reversed, the header shows ↔ indicator -->
 ```
 
 ### Multi-line Cards (Fenced with :::)
@@ -99,27 +110,6 @@ It reverses a string using recursion.
 ```
 
 Tags go on the closing `:::` line.
-
-### Alternative Multi-line Syntax (Custom Delimiters)
-
-```markdown
-???
-Explain the difference between `let` and `const` in JavaScript.
----
-- `let`: Block-scoped, can be reassigned
-- `const`: Block-scoped, cannot be reassigned (but objects/arrays are mutable)
-
-Example:
-```javascript
-let x = 1;
-x = 2; // OK
-
-const y = 1;
-y = 2; // Error!
-```
-#javascript #basics
-???
-```
 
 ## Tag System
 
@@ -204,11 +194,12 @@ Using SQLite via `sqlite.lua` for persistence:
 ```sql
 -- Cards table
 CREATE TABLE cards (
-    id TEXT PRIMARY KEY,           -- SHA256 of file:line:content
+    id TEXT PRIMARY KEY,           -- Unique ID stored in source file
     file_path TEXT NOT NULL,
     line_number INTEGER,
     front TEXT NOT NULL,
     back TEXT NOT NULL,
+    reversible INTEGER DEFAULT 0,  -- 1 if card uses :?: (shows either side)
     created_at INTEGER,
     updated_at INTEGER
 );
@@ -558,7 +549,7 @@ describe("parser", function()
     local parser = require("flashcards.parser")
 
     it("extracts inline cards", function()
-        local content = "What is 2+2? :: 4"
+        local content = "What is 2+2? ::: 4"
         local cards = parser.parse_content(content)
         assert.equals(1, #cards)
         assert.equals("What is 2+2?", cards[1].front)
@@ -566,9 +557,16 @@ describe("parser", function()
     end)
 
     it("extracts tags", function()
-        local content = "Question :: Answer #math #basics"
+        local content = "Question ::: Answer #math #basics"
         local cards = parser.parse_content(content)
         assert.same({"math", "basics"}, cards[1].tags)
+    end)
+
+    it("extracts reversible cards", function()
+        local content = "Term :?: Definition #vocab"
+        local cards = parser.parse_content(content)
+        assert.equals(1, #cards)
+        assert.is_true(cards[1].reversible)
     end)
 end)
 ```

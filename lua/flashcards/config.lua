@@ -18,21 +18,15 @@ M.defaults = {
 
     -- Card detection patterns
     patterns = {
-        -- Inline pattern: "front :: back"
+        -- Inline pattern: "front ::: back" or "front :?: back" (reversible)
         inline = {
             enabled = true,
-            separator = "::",
+            -- Note: separator is now hardcoded to ::: and :?: in parser
         },
         -- Fenced block pattern: :::card ... --- ... ::: #tags
         fenced = {
             enabled = true,
             fence = "card",  -- Used with ::: (e.g., :::card)
-        },
-        -- Custom delimiter pattern: ??? ... --- ... ???
-        custom = {
-            enabled = true,
-            delimiter = "???",
-            separator = "---",
         },
     },
 

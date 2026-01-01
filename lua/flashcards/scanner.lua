@@ -123,6 +123,54 @@ function M.scan_directory(dir)
     return results
 end
 
+--- Reload buffer for a file if it's currently open
+---@param file_path string File path
+local function reload_buffer(file_path)
+    -- Find buffer for this file
+    local bufnr = vim.fn.bufnr(file_path)
+    if bufnr == -1 then
+        return -- No buffer open for this file
+    end
+
+    -- Check if buffer is loaded
+    if not vim.api.nvim_buf_is_loaded(bufnr) then
+        return
+    end
+
+    -- Schedule the reload to avoid issues with current context
+    vim.schedule(function()
+        -- Check if buffer is still valid
+        if not vim.api.nvim_buf_is_valid(bufnr) then
+            return
+        end
+
+        -- Save current position if this buffer is visible in a window
+        local saved_view = nil
+        local win_ids = vim.fn.win_findbuf(bufnr)
+        if #win_ids > 0 then
+            local current_win = vim.api.nvim_get_current_win()
+            local current_buf = vim.api.nvim_win_get_buf(current_win)
+            if current_buf == bufnr then
+                saved_view = vim.fn.winsaveview()
+            end
+        end
+
+        -- Reload the buffer (silently)
+        vim.api.nvim_buf_call(bufnr, function()
+            vim.cmd("silent! edit")
+        end)
+
+        -- Restore view if we saved it
+        if saved_view and #vim.fn.win_findbuf(bufnr) > 0 then
+            local current_win = vim.api.nvim_get_current_win()
+            local current_buf = vim.api.nvim_win_get_buf(current_win)
+            if current_buf == bufnr then
+                vim.fn.winrestview(saved_view)
+            end
+        end
+    end)
+end
+
 --- Write card IDs back to source file
 ---@param file_path string File path
 ---@param cards table Cards that need IDs written
@@ -168,6 +216,9 @@ local function write_card_ids(file_path, cards)
     end
     file:write(table.concat(lines, "\n"))
     file:close()
+
+    -- Reload buffer if file is open in Neovim
+    reload_buffer(file_path)
 
     return true
 end
