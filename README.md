@@ -157,6 +157,35 @@ Reviewing `#math` includes all `#math/*` cards.
 Cards also inherit tags from their file path:
 - `notes/programming/python.md` → implicit `#programming/python`
 
+### Tag Scopes
+
+Use `:#tag:` to apply a tag to all following cards in a file, without adding `#tag` to each card:
+
+```markdown
+:#programming:
+
+What is a variable? ::: A named storage location
+What is a function? ::: A reusable block of code
+What is a loop? ::: A control structure for repetition
+
+:#:
+```
+
+All three cards above will have the `#programming` tag. Use `:#:` to clear all scoped tags.
+
+Multiple scopes can be stacked:
+
+```markdown
+:#math:
+:#algebra:
+
+What is a polynomial? ::: An expression with variables and coefficients
+
+:#:
+```
+
+The card above gets both `#math` and `#algebra` tags.
+
 ## Commands
 
 | Command | Description |

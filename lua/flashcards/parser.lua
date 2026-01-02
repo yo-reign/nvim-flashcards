@@ -2,6 +2,7 @@
 -- Supports multiple card formats:
 -- 1. Inline: "front ::: back #tags" (normal) or "front :?: back #tags" (reversible)
 -- 2. Fenced: :::card ... :-: ... ::: #tags (normal) or :?:card ... :-: ... :?: #tags (reversible)
+-- 3. Tag scopes: :#tag: applies tag to all following cards until :#: clears it
 
 local M = {}
 
@@ -31,15 +32,18 @@ function M.parse_file(file_path, content)
     local cards = {}
     local opts = config.options.patterns
 
+    -- First, parse scoped tags (:#tag: ... :#:)
+    local scoped_tags = M.parse_scoped_tags(content)
+
     -- Parse inline cards (both ::: and :?: separators)
     if opts.inline.enabled then
-        local inline_cards = M.parse_inline(file_path, content, opts.inline)
+        local inline_cards = M.parse_inline(file_path, content, opts.inline, scoped_tags)
         vim.list_extend(cards, inline_cards)
     end
 
     -- Parse fenced cards
     if opts.fenced.enabled then
-        local fenced_cards = M.parse_fenced(file_path, content, opts.fenced)
+        local fenced_cards = M.parse_fenced(file_path, content, opts.fenced, scoped_tags)
         vim.list_extend(cards, fenced_cards)
     end
 
@@ -75,15 +79,57 @@ function M.find_base_directory(file_path)
     return nil
 end
 
+--- Parse scoped tags from content
+--- Scoped tags use :#tag: to start applying a tag and :#: to clear all scoped tags
+--- Multiple :#tag: declarations accumulate until :#: clears them
+---@param content string File content
+---@return table Map of line numbers to list of active scoped tags at that line
+function M.parse_scoped_tags(content)
+    local lines = utils.lines(content)
+    local active_tags = {}  -- Currently active scoped tags
+    local line_tags = {}    -- Map: line_num -> list of tags active at that line
+
+    for line_num, line in ipairs(lines) do
+        -- Check for tag scope clear: :#:
+        if line:match("^%s*:#:%s*$") then
+            active_tags = {}
+        else
+            -- Check for tag scope set: :#tagname:
+            local scoped_tag = line:match("^%s*:#([%w_/%-]+):%s*$")
+            if scoped_tag then
+                -- Add to active tags if not already present
+                if not vim.tbl_contains(active_tags, scoped_tag) then
+                    table.insert(active_tags, scoped_tag)
+                end
+            end
+        end
+
+        -- Store a copy of current active tags for this line
+        line_tags[line_num] = vim.deepcopy(active_tags)
+    end
+
+    return line_tags
+end
+
+--- Get scoped tags for a specific line
+---@param scoped_tags table Scoped tags map from parse_scoped_tags
+---@param line_num integer Line number
+---@return table List of scoped tags active at that line
+function M.get_scoped_tags_at_line(scoped_tags, line_num)
+    return scoped_tags[line_num] or {}
+end
+
 --- Parse inline cards (single line: "front ::: back #tags" or "front :?: back #tags")
 --- ::: = normal card, :?: = reversible (50% chance of showing back first)
 ---@param file_path string File path
 ---@param content string File content
 ---@param opts table Pattern options
+---@param scoped_tags table|nil Scoped tags map from parse_scoped_tags
 ---@return Card[] Cards
-function M.parse_inline(file_path, content, opts)
+function M.parse_inline(file_path, content, opts, scoped_tags)
     local cards = {}
     local lines = utils.lines(content)
+    scoped_tags = scoped_tags or {}
 
     for line_num, line in ipairs(lines) do
         -- Skip lines that are in code blocks
@@ -92,7 +138,12 @@ function M.parse_inline(file_path, content, opts)
         end
 
         -- Skip lines that start with code block markers or fenced card markers
-        if line:match("^%s*```") or line:match("^%s*~~~") or line:match("^%s*:::") then
+        if line:match("^%s*```") or line:match("^%s*~~~") or line:match("^%s*:::") or line:match("^%s*:%?:") then
+            goto continue
+        end
+
+        -- Skip tag scope markers (:#tag: or :#:)
+        if line:match("^%s*:#[%w_/%-]*:%s*$") then
             goto continue
         end
 
@@ -117,6 +168,14 @@ function M.parse_inline(file_path, content, opts)
             local tags = utils.parse_tags(back_clean)
             back_clean = utils.strip_tags(back_clean)
             back_clean = utils.trim(back_clean)
+
+            -- Add scoped tags (from :#tag: markers)
+            local line_scoped_tags = M.get_scoped_tags_at_line(scoped_tags, line_num)
+            for _, scoped_tag in ipairs(line_scoped_tags) do
+                if not vim.tbl_contains(tags, scoped_tag) then
+                    table.insert(tags, scoped_tag)
+                end
+            end
 
             if #back_clean > 0 then
                 local card = {
@@ -145,10 +204,12 @@ end
 ---@param file_path string File path
 ---@param content string File content
 ---@param opts table Pattern options
+---@param scoped_tags table|nil Scoped tags map from parse_scoped_tags
 ---@return Card[] Cards
-function M.parse_fenced(file_path, content, opts)
+function M.parse_fenced(file_path, content, opts, scoped_tags)
     local cards = {}
     local fence_type = opts.fence or "card"
+    scoped_tags = scoped_tags or {}
 
     -- Parse line by line to handle fences properly
     local lines_arr = utils.lines(content)
@@ -212,6 +273,14 @@ function M.parse_fenced(file_path, content, opts)
                         tags = utils.parse_tags(back)
                         back = utils.strip_tags(back)
                         back = utils.trim(back)
+                    end
+
+                    -- Add scoped tags (from :#tag: markers)
+                    local line_scoped_tags = M.get_scoped_tags_at_line(scoped_tags, start_line)
+                    for _, scoped_tag in ipairs(line_scoped_tags) do
+                        if not vim.tbl_contains(tags, scoped_tag) then
+                            table.insert(tags, scoped_tag)
+                        end
                     end
 
                     if #front > 0 and #back > 0 then

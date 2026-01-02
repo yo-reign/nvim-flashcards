@@ -133,6 +133,32 @@ Definition or explanation here
 - Explicit tags override implicit ones
 - Multiple tags per card supported
 
+### Tag Scopes
+
+Use `:#tag:` to apply a tag to all following cards in a file until `:#:` clears it:
+
+```markdown
+:#python:
+
+What is a list? ::: An ordered, mutable collection
+What is a dict? ::: A key-value mapping
+
+:#:
+```
+
+Both cards get the `#python` tag without explicit `#python` on each line.
+
+Multiple scopes stack:
+
+```markdown
+:#math:
+:#algebra:
+
+Quadratic formula ::: x = (-b ± √(b²-4ac)) / 2a
+
+:#:
+```
+
 ### Tag Storage
 
 ```sql
@@ -579,6 +605,14 @@ describe("parser", function()
         local cards = parser.parse_content(content)
         assert.equals(1, #cards)
         assert.is_true(cards[1].reversible)
+    end)
+
+    it("applies scoped tags", function()
+        local content = ":#math:\nQ1 ::: A1\nQ2 ::: A2\n:#:"
+        local cards = parser.parse_file("test.md", content)
+        assert.equals(2, #cards)
+        assert.is_true(vim.tbl_contains(cards[1].tags, "math"))
+        assert.is_true(vim.tbl_contains(cards[2].tags, "math"))
     end)
 end)
 ```
