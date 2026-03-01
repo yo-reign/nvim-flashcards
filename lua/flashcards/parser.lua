@@ -177,12 +177,15 @@ end
 --- @return string
 local function trim_multiline(line_list)
   -- Find first non-blank line
-  local first = 1
+  local first = nil
   for i = 1, #line_list do
     if line_list[i]:match("%S") then
       first = i
       break
     end
+  end
+  if not first then
+    return ""
   end
   -- Find last non-blank line
   local last = #line_list
@@ -191,10 +194,6 @@ local function trim_multiline(line_list)
       last = i
       break
     end
-  end
-  -- If all blank, return empty
-  if first > last then
-    return ""
   end
   local trimmed = {}
   for i = first, last do
@@ -375,7 +374,7 @@ function M.parse(file_path, content, scan_root)
       end
 
       -- Check for premature close (no separator)
-      local matched, _, close_rest = match_fenced_close(line)
+      local matched = match_fenced_close(line)
       if matched then
         errors[#errors + 1] = {
           line = fenced.open_line,

@@ -21,6 +21,7 @@ local state = {
   session = nil,
   popup = nil,
   showing_answer = false,
+  card_shown_at = nil,
 }
 
 -- ============================================================================
@@ -227,6 +228,11 @@ local function render_card()
     table.insert(lines, "  " .. line)
   end
 
+  -- Track when question is shown for elapsed_ms timing
+  if not state.showing_answer then
+    state.card_shown_at = os.time()
+  end
+
   if state.showing_answer then
     -- Divider
     table.insert(lines, "")
@@ -414,7 +420,11 @@ function M.answer(rating)
     return
   end
 
-  state.session:answer(rating)
+  local elapsed_ms = 0
+  if state.card_shown_at then
+    elapsed_ms = (os.time() - state.card_shown_at) * 1000
+  end
+  state.session:answer(rating, elapsed_ms)
 
   if state.session:next_card() then
     state.showing_answer = false
@@ -471,15 +481,22 @@ function M.edit_card()
     return
   end
 
-  -- Resolve to absolute path from configured directories
+  -- Resolve to absolute path from configured directories (with path traversal guard)
   local file_path = card.file_path
   local line_nr = card.line or 1
+  local resolved = false
   for _, dir in ipairs(config.options.directories) do
-    local abs = dir .. "/" .. file_path
-    if vim.fn.filereadable(abs) == 1 then
+    local abs = vim.fn.resolve(dir .. "/" .. file_path)
+    if vim.fn.filereadable(abs) == 1 and utils.is_subpath(abs, dir) then
       file_path = abs
+      resolved = true
       break
     end
+  end
+
+  if not resolved then
+    vim.notify("Cannot resolve card file path: " .. file_path, vim.log.levels.ERROR)
+    return
   end
 
   M.close()
@@ -518,6 +535,7 @@ function M.close()
   end
 
   state.showing_answer = false
+  state.card_shown_at = nil
 end
 
 --- Check whether a review session is currently active.

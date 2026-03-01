@@ -52,7 +52,7 @@ describe("scanner", function()
       os.remove(path)
 
       assert.equals(1, result.cards_found)
-      assert.equals(0, result.cards_new)
+      assert.equals(1, result.cards_new) -- new to store (even though ID already existed in file)
       assert.equals(0, #result.errors)
 
       local card = store:get_card("test0001")
@@ -559,7 +559,7 @@ describe("scanner", function()
 
       assert.equals(2, report.files_scanned)
       assert.equals(2, report.cards_found)
-      assert.equals(1, report.cards_new) -- file2's card had no ID
+      assert.equals(2, report.cards_new) -- both cards new to store
       assert.equals(0, #report.errors)
     end)
 

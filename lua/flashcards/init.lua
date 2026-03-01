@@ -69,7 +69,6 @@ function M._register_commands()
     local scanner = require("flashcards.scanner")
     local store = get_store()
     local report = scanner.scan(config.options.directories, store, config)
-    store:save()
     vim.notify(string.format(
       "Scan complete: %d files, %d cards (%d new, %d updated), %d orphans, %d errors",
       report.files_scanned,
@@ -127,14 +126,16 @@ function M._setup_autocommands()
     group = group,
     pattern = { "*.md", "*.markdown" },
     callback = function(ev)
-      local file_path = ev.file or vim.api.nvim_buf_get_name(ev.buf)
       local utils = require("flashcards.utils")
+      -- Canonicalize path to prevent traversal via .. or symlinks
+      local file_path = vim.fn.resolve(ev.file or vim.api.nvim_buf_get_name(ev.buf))
 
       -- Find which configured directory this file belongs to
       local scan_root = nil
       for _, dir in ipairs(config.options.directories) do
-        if utils.is_subpath(file_path, dir) then
-          scan_root = dir
+        local resolved_dir = vim.fn.resolve(vim.fn.expand(dir))
+        if utils.is_subpath(file_path, resolved_dir) then
+          scan_root = resolved_dir
           break
         end
       end

@@ -26,17 +26,22 @@ local M = {}
 --- Resolve a relative card file_path to an absolute path.
 --- @param file_path string relative path from card
 --- @return string absolute path (or original if not resolved)
+--- Resolve a relative card file_path to an absolute path.
+--- Uses vim.fn.resolve() to canonicalize and validates the result
+--- stays within configured directories (path traversal guard).
+--- @param file_path string relative path from card
+--- @return string|nil absolute path, or nil if path escapes configured directories
 local function resolve_path(file_path)
   if not config.options or not config.options.directories then
-    return file_path
+    return nil
   end
   for _, dir in ipairs(config.options.directories) do
-    local abs = dir .. "/" .. file_path
-    if vim.fn.filereadable(abs) == 1 then
+    local abs = vim.fn.resolve(dir .. "/" .. file_path)
+    if vim.fn.filereadable(abs) == 1 and utils.is_subpath(abs, dir) then
       return abs
     end
   end
-  return file_path
+  return nil
 end
 
 --- Get the state icon for a card status from config.
@@ -214,7 +219,12 @@ function M.browse(store, opts)
         local entry = action_state.get_selected_entry()
         if entry and entry.value then
           local card = entry.value
-          vim.cmd(string.format("edit +%d %s", card.line or 1, vim.fn.fnameescape(resolve_path(card.file_path))))
+          local abs = resolve_path(card.file_path)
+          if abs then
+            vim.cmd(string.format("edit +%d %s", card.line or 1, vim.fn.fnameescape(abs)))
+          else
+            vim.notify("Cannot resolve card file path: " .. card.file_path, vim.log.levels.ERROR)
+          end
         end
       end)
 
@@ -277,22 +287,21 @@ function M.due(store, opts)
       end)
 
       -- <C-e>: edit card source
-      map("i", "<C-e>", function()
+      local edit_card = function()
         actions.close(prompt_bufnr)
         local entry = action_state.get_selected_entry()
         if entry and entry.value then
           local card = entry.value
-          vim.cmd(string.format("edit +%d %s", card.line or 1, vim.fn.fnameescape(resolve_path(card.file_path))))
+          local abs = resolve_path(card.file_path)
+          if abs then
+            vim.cmd(string.format("edit +%d %s", card.line or 1, vim.fn.fnameescape(abs)))
+          else
+            vim.notify("Cannot resolve card file path: " .. card.file_path, vim.log.levels.ERROR)
+          end
         end
-      end)
-      map("n", "<C-e>", function()
-        actions.close(prompt_bufnr)
-        local entry = action_state.get_selected_entry()
-        if entry and entry.value then
-          local card = entry.value
-          vim.cmd(string.format("edit +%d %s", card.line or 1, vim.fn.fnameescape(resolve_path(card.file_path))))
-        end
-      end)
+      end
+      map("i", "<C-e>", edit_card)
+      map("n", "<C-e>", edit_card)
 
       return true
     end,
@@ -368,11 +377,12 @@ function M.tags(store, opts)
                 local inner_entry = action_state.get_selected_entry()
                 if inner_entry and inner_entry.value then
                   local card = inner_entry.value
-                  vim.cmd(string.format(
-                    "edit +%d %s",
-                    card.line or 1,
-                    vim.fn.fnameescape(resolve_path(card.file_path))
-                  ))
+                  local abs = resolve_path(card.file_path)
+                  if abs then
+                    vim.cmd(string.format("edit +%d %s", card.line or 1, vim.fn.fnameescape(abs)))
+                  else
+                    vim.notify("Cannot resolve card file path: " .. card.file_path, vim.log.levels.ERROR)
+                  end
                 end
               end)
               return true
@@ -442,7 +452,12 @@ function M.search(store, opts)
         local entry = action_state.get_selected_entry()
         if entry and entry.value then
           local card = entry.value
-          vim.cmd(string.format("edit +%d %s", card.line or 1, vim.fn.fnameescape(resolve_path(card.file_path))))
+          local abs = resolve_path(card.file_path)
+          if abs then
+            vim.cmd(string.format("edit +%d %s", card.line or 1, vim.fn.fnameescape(abs)))
+          else
+            vim.notify("Cannot resolve card file path: " .. card.file_path, vim.log.levels.ERROR)
+          end
         end
       end)
       return true

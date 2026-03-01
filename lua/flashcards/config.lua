@@ -86,7 +86,8 @@ function M.setup(opts)
     M.options.directories[i] = utils.normalize_path(dir)
   end
 
-  -- Normalize db_path if provided
+  -- Preserve raw db_path for directory detection, then normalize
+  M._raw_db_path = M.options.db_path
   if M.options.db_path then
     M.options.db_path = utils.normalize_path(M.options.db_path)
   end
@@ -116,27 +117,28 @@ function M.get_storage_path()
   local storage_type = opts.storage
   local filename = storage_type == "sqlite" and "flashcards.db" or "flashcards.json"
 
-  local raw_path = opts.db_path
-  local from_directory = raw_path == nil
+  local normalized_path = opts.db_path
+  local from_directory = normalized_path == nil
 
   if from_directory then
     -- Use first configured directory; this is always a directory
-    raw_path = opts.directories[1]
+    normalized_path = opts.directories[1]
   end
 
-  if raw_path == nil then
+  if normalized_path == nil then
     error("flashcards: no db_path or directories configured")
   end
 
-  local base = utils.normalize_path(raw_path)
+  local base = utils.normalize_path(normalized_path)
 
   -- Determine if the path refers to a directory:
   -- 1. It came from `directories` (always a directory)
-  -- 2. Original db_path ended with "/" or "\"
+  -- 2. Original (pre-normalized) db_path ended with "/" or "\"
   -- 3. Path exists as a directory on disk
+  local raw_db = M._raw_db_path or ""
   local is_dir = from_directory
-    or raw_path:sub(-1) == "/"
-    or raw_path:sub(-1) == "\\"
+    or raw_db:sub(-1) == "/"
+    or raw_db:sub(-1) == "\\"
     or vim.fn.isdirectory(base) == 1
 
   if is_dir then

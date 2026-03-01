@@ -64,7 +64,7 @@ function Session:load_cards()
   local new = {}      -- new cards
 
   for _, card in ipairs(due) do
-    local state = card.state or self.store:get_card_state(card.id)
+    local state = card.state or self.store:get_card_state(card.id) or {}
     local status = state.status or "new"
 
     if status == "learning" or status == "relearning" then
@@ -169,7 +169,8 @@ local REQUEUE_THRESHOLD_DAYS = 30 / (24 * 60) -- 30 minutes in days
 --- Schedules via FSRS, records review in session and store, updates card state,
 --- and re-queues if the card is still in learning/relearning with a short interval.
 --- @param rating number 1 (Wrong) or 2 (Correct)
-function Session:answer(rating)
+--- @param elapsed_ms number|nil time spent on this card in milliseconds
+function Session:answer(rating, elapsed_ms)
   if self.current_idx < 1 or self.current_idx > #self.queue then
     return
   end
@@ -181,8 +182,11 @@ function Session:answer(rating)
 
   local now = utils.now()
 
-  -- Get current state from store
+  -- Get current state from store (with fallback for deleted cards)
   local state_before = self.store:get_card_state(card.id)
+  if not state_before then
+    state_before = { status = "new", stability = 0, difficulty = 0, reps = 0, lapses = 0, learning_step = 0 }
+  end
   local status_before = state_before.status
 
   -- Schedule via FSRS
@@ -198,7 +202,7 @@ function Session:answer(rating)
     state_before = utils.deep_copy(state_before),
     state_after = utils.deep_copy(new_state),
     rating = rating,
-    elapsed_ms = 0, -- UI layer should set this; default to 0
+    elapsed_ms = elapsed_ms or 0,
     is_reversed = is_reversed,
     queue_position = self.current_idx,
   }
@@ -209,7 +213,7 @@ function Session:answer(rating)
     card_id = card.id,
     rating = rating,
     reviewed_at = now,
-    elapsed_ms = 0,
+    elapsed_ms = elapsed_ms or 0,
     state_before = status_before,
     state_after = status_after,
   })
@@ -286,10 +290,12 @@ function Session:skip()
   local card = table.remove(self.queue, self.current_idx)
   table.insert(self.queue, card)
 
-  -- current_idx now points to the next card (because we removed from current position)
-  -- Don't advance; the next card slid into the current position.
-  -- But we need to stay at the same index since the queue shifted.
-  -- Actually after removal, current_idx already points to the next card.
+  -- After removal, current_idx points to the next card (queue shifted).
+  -- But if we removed the last card, current_idx now exceeds #queue.
+  -- Clamp to avoid returning nil from current_card().
+  if self.current_idx > #self.queue then
+    self.current_idx = #self.queue
+  end
 end
 
 -- ============================================================================
@@ -309,6 +315,9 @@ function Session:preview_intervals()
   end
 
   local state = self.store:get_card_state(card.id)
+  if not state then
+    return nil
+  end
   return self.fsrs:preview_intervals(state, utils.now())
 end
 

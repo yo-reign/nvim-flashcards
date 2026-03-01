@@ -255,8 +255,9 @@ end
 --- @return boolean success
 --- @return string|nil error
 function M.write_file(path, content)
-  -- Atomic write: write to temp file then rename
-  local tmp_path = path .. ".tmp"
+  -- Atomic write: write to temp file then rename (PID-unique to avoid concurrent corruption)
+  local pid = vim.loop and vim.loop.getpid and vim.loop.getpid() or os.time()
+  local tmp_path = path .. "." .. tostring(pid) .. ".tmp"
   local f, err = io.open(tmp_path, "w")
   if not f then
     return false, err

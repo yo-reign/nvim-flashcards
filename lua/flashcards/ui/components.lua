@@ -29,7 +29,7 @@ end
 
 function M.percentage(value, decimals)
     decimals = decimals or 1
-    if value <= 1 then
+    if value < 1 then
         value = value * 100
     end
     return string.format("%." .. decimals .. "f%%", value)

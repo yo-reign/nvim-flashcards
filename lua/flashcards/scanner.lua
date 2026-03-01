@@ -21,20 +21,14 @@ local function id_write_line(card)
   return card.line
 end
 
---- Check if a card is a fenced card by inspecting the line content.
---- @param line string the raw line from the file
---- @return boolean
-local function is_fenced_opener(line)
-  return line:match("^:::card") ~= nil or line:match("^:%?:card") ~= nil
-end
-
 --- Write card IDs back into raw file lines for cards that lack them.
 --- Works bottom-up to avoid shifting line numbers.
 ---
 --- @param file_lines string[] the raw file lines (mutable)
 --- @param cards table[] parsed cards (some may have id=nil)
+--- @param store table|nil storage backend for collision checking
 --- @return string[] ids list of newly generated IDs
-local function write_ids_back(file_lines, cards)
+local function write_ids_back(file_lines, cards, store)
   -- Collect cards that need IDs, sorted by line number descending
   local needs_id = {}
   for _, card in ipairs(cards) do
@@ -53,6 +47,13 @@ local function write_ids_back(file_lines, cards)
   local new_ids = {}
   for _, card in ipairs(needs_id) do
     local id = utils.generate_id()
+    -- Check for collision with existing store IDs
+    if store then
+      for _ = 1, 10 do
+        if not store:get_card(id) then break end
+        id = utils.generate_id()
+      end
+    end
     local line_num = id_write_line(card)
     local comment = utils.format_card_id(id)
 
@@ -106,6 +107,7 @@ function M.scan_file(file_path, store, scan_root)
   local result = {
     cards_found = 0,
     cards_new = 0,
+    cards_updated = 0,
     ids_written = 0,
     errors = {},
     card_ids = {},
@@ -138,11 +140,14 @@ function M.scan_file(file_path, store, scan_root)
 
   -- Write IDs back for cards without them
   local file_lines = utils.lines(content)
-  local new_ids = write_ids_back(file_lines, cards)
+  local new_ids = write_ids_back(file_lines, cards, store)
 
   if #new_ids > 0 then
-    -- Write modified content back to file
+    -- Write modified content back to file, preserving trailing newline
     local new_content = utils.join_lines(file_lines)
+    if content:sub(-1) == "\n" then
+      new_content = new_content .. "\n"
+    end
     local ok, write_err = utils.write_file(file_path, new_content)
     if not ok then
       result.errors[#result.errors + 1] = {
@@ -172,9 +177,7 @@ function M.scan_file(file_path, store, scan_root)
     reload_buffers(file_path)
   end
 
-  -- Count new cards (cards that didn't exist in the store before)
   result.cards_found = #cards
-  result.cards_new = #new_ids
 
   -- Build set of found card IDs for this file
   local found_ids = {}
@@ -185,9 +188,10 @@ function M.scan_file(file_path, store, scan_root)
     end
   end
 
-  -- Upsert all cards to storage
+  -- Upsert all cards to storage, tracking new vs updated
   for _, card in ipairs(cards) do
     if card.id then
+      local existing = store:get_card(card.id)
       store:upsert_card({
         id = card.id,
         file_path = rel_path,
@@ -199,6 +203,11 @@ function M.scan_file(file_path, store, scan_root)
         tags = card.tags,
         note = card.note,
       })
+      if existing then
+        result.cards_updated = result.cards_updated + 1
+      else
+        result.cards_new = result.cards_new + 1
+      end
     end
   end
 
@@ -310,7 +319,8 @@ function M.scan(dirs, store, config)
       local file_result = M.scan_file(file_path, store, dir)
 
       report.cards_found = report.cards_found + file_result.cards_found
-      report.cards_new = report.cards_new + file_result.cards_new
+      report.cards_new = report.cards_new + (file_result.cards_new or 0)
+      report.cards_updated = report.cards_updated + (file_result.cards_updated or 0)
 
       -- Collect found IDs for global orphan detection
       for _, id in ipairs(file_result.card_ids) do

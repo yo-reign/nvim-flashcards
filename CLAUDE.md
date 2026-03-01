@@ -106,10 +106,10 @@ def reverse(s):
 ```
 :-:
 It reverses a string using recursion.
-::: #python #recursion
+:::end #python #recursion
 ```
 
-Tags go on the closing `:::` line.
+Tags go on the `:::end` closing line.
 
 ### Reversible Multi-line Cards
 
@@ -120,7 +120,7 @@ Use `:?:card` instead of `:::card` for reversible fenced cards (50% chance of sh
 Term or concept here
 :-:
 Definition or explanation here
-:?: #vocabulary
+:?:end #vocabulary
 ```
 
 ## Tag System
