@@ -5,13 +5,17 @@ A Neovim plugin for markdown-based spaced repetition flashcards using a simplifi
 ## Features
 
 - **Markdown-based cards** - Define flashcards directly in your notes
-- **Binary rating system** - Simple Wrong/Correct rating (no complex 4-point scale)
+- **Binary rating system** - Simple Wrong/Correct rating
 - **Adjustable target correctness** - Set your target retention rate (default 85%)
 - **FSRS-inspired algorithm** - Modern spaced repetition scheduling
 - **Hierarchical tags** - `#math/calc`, `#math/algebra` with parent inheritance
+- **Named tag scopes** - Apply tags to blocks of cards without repeating yourself
 - **Multi-line support** - Code blocks, lists, and complex formatting preserved
-- **Telescope integration** - Search, filter, and browse cards
-- **Beautiful UI** - Floating window with syntax highlighting
+- **Reversible cards** - Cards that can quiz you in either direction
+- **Telescope integration** - Browse, search, and filter cards
+- **Orphan management** - Soft-delete lost cards, reactivate or purge them
+- **JSON storage** - Human-readable data file you can manually inspect and edit
+- **Auto-sync** - Cards update on file save
 
 ## Requirements
 
@@ -19,8 +23,7 @@ A Neovim plugin for markdown-based spaced repetition flashcards using a simplifi
 - [plenary.nvim](https://github.com/nvim-lua/plenary.nvim)
 - [nui.nvim](https://github.com/MunifTanjim/nui.nvim)
 - [telescope.nvim](https://github.com/nvim-telescope/telescope.nvim)
-- [sqlite.lua](https://github.com/kkharji/sqlite.lua)
-- [nvim-treesitter](https://github.com/nvim-treesitter/nvim-treesitter) (optional, for syntax highlighting)
+- [nvim-treesitter](https://github.com/nvim-treesitter/nvim-treesitter) (optional, for syntax highlighting in review window)
 
 ## Installation
 
@@ -33,48 +36,35 @@ A Neovim plugin for markdown-based spaced repetition flashcards using a simplifi
         "nvim-lua/plenary.nvim",
         "MunifTanjim/nui.nvim",
         "nvim-telescope/telescope.nvim",
-        "kkharji/sqlite.lua",
     },
     config = function()
         require("flashcards").setup({
-            directories = { "~/notes" },
+            directories = { "~/notes/flashcards/" },
+            storage = "json",
+            db_path = "~/notes/assets/",
             fsrs = {
-                target_correctness = 0.85, -- 85% target retention
+                target_correctness = 0.85,
             },
         })
-    end,
-}
-```
 
-### packer.nvim
-
-```lua
-use {
-    "yo-reign/nvim-flashcards",
-    requires = {
-        "nvim-lua/plenary.nvim",
-        "MunifTanjim/nui.nvim",
-        "nvim-telescope/telescope.nvim",
-        "kkharji/sqlite.lua",
-    },
-    config = function()
-        require("flashcards").setup({
-            directories = { "~/notes" },
-        })
+        vim.keymap.set("n", "<leader>fcr", ":FlashcardsReview<CR>", { desc = "Review flashcards" })
+        vim.keymap.set("n", "<leader>fcs", ":FlashcardsScan<CR>", { desc = "Scan for new flashcards" })
+        vim.keymap.set("n", "<leader>fcb", ":FlashcardsBrowse<CR>", { desc = "Browse flashcards" })
+        vim.keymap.set("n", "<leader>fct", ":FlashcardsTags<CR>", { desc = "Browse flashcard tags" })
+        vim.keymap.set("n", "<leader>fcd", ":FlashcardsDue<CR>", { desc = "Browse due flashcards" })
+        vim.keymap.set("n", "<leader>fcS", ":FlashcardsStats<CR>", { desc = "Show flashcard stats" })
+        vim.keymap.set("n", "<leader>fco", ":FlashcardsOrphans<CR>", { desc = "Manage orphaned cards" })
     end,
 }
 ```
 
 ## Quick Start
 
-1. Initialize flashcards in your notes directory:
-   ```
-   :FlashcardsInit
-   ```
+1. Add card syntax to your markdown files (see Card Syntax below)
 
-2. Create cards in your markdown files:
-   ```markdown
-   What is a closure? ::: A function that captures variables from its enclosing scope #programming
+2. Scan for cards:
+   ```
+   :FlashcardsScan
    ```
 
 3. Start a review session:
@@ -82,7 +72,7 @@ use {
    :FlashcardsReview
    ```
 
-4. Use `1` for Correct, `2` for Wrong (or `y`/`n`)
+4. Rate cards: `1` = Wrong, `2` = Correct (or `n`/`y`)
 
 ## Card Syntax
 
@@ -99,31 +89,31 @@ Question text ::: Answer text #tag1 #tag2 <!-- fc:abc12345 -->
 
 ### Reversible Cards
 
-Use `:?:` instead of `:::` for cards that can be shown in either direction (50% chance of showing the back as the question):
+Use `:?:` instead of `:::` for cards that can be shown in either direction (50% chance):
 
 ```markdown
 Term :?: Definition #vocabulary
 ```
 
-When reviewing, a `↔` indicator shows in the header if the card is reversed.
+A `↔` indicator shows in the review header when a card is reversed.
 
 ### Multi-line Cards (Fenced)
 
-Uses `:::card` fences which don't conflict with code blocks inside. Use `:-:` to separate front from back:
+Use `:::card` / `:::end` fences with `:-:` separating front from back:
 
 ```markdown
 :::card
 What does this function do?
 
-```python
+` ``python
 def reverse(s):
     if len(s) <= 1:
         return s
     return reverse(s[1:]) + s[0]
-```
+` ``
 :-:
 It reverses a string using recursion.
-::: #python #recursion
+:::end #python #recursion
 ```
 
 After scanning, an ID is added to the opening line:
@@ -131,101 +121,113 @@ After scanning, an ID is added to the opening line:
 :::card <!-- fc:xyz98765 -->
 ```
 
-Tags go on the closing `:::` line.
+Tags go on the closing `:::end` line.
 
 ### Reversible Multi-line Cards
 
-Use `:?:card` instead of `:::card` for reversible fenced cards:
+Use `:?:card` / `:?:end` for reversible fenced cards:
 
 ```markdown
 :?:card
 Term or concept here
 :-:
 Definition or explanation here
-:?: #vocabulary
+:?:end #vocabulary
+```
+
+### Source Annotations
+
+Add a note on the line after a card to record its source:
+
+```markdown
+What is the quadratic formula? ::: x = (-b +/- sqrt(b^2 - 4ac)) / 2a #math
+<!-- note: Serge Lang Ch.1 p.12 -->
+```
+
+Notes are shown as footnotes during review when `config.ui.show_note = true`.
+
+### Suspended Cards
+
+Add `!suspended` to a card's ID comment to exclude it from reviews:
+
+```markdown
+What is X? ::: Y <!-- fc:abc12345 !suspended -->
+```
+
+Suspended cards are still visible when browsing but never appear in review sessions.
+
+### Template Variables
+
+Template variables expand at parse time, useful in tag scopes and notes:
+
+- `{{file.name}}` - filename without extension
+- `{{file.dir}}` - parent directory name
+- `{{file.path}}` - relative path from scan root, no extension
+
+```markdown
+:#{{file.dir}}/{{file.name}}:
+<!-- note: {{file.name}} (1.2.3:5) -->
 ```
 
 ## Tags
 
 Tags use `/` for hierarchy:
 - `#math` - Top-level tag
-- `#math/calc` - Sub-tag of math
-- `#math/algebra` - Another sub-tag
-
-Reviewing `#math` includes all `#math/*` cards.
-
-Cards also inherit tags from their file path:
-- `notes/programming/python.md` → implicit `#programming/python`
+- `#math/calc` - Sub-tag
+- Reviewing `#math` includes all `#math/*` cards
 
 ### Tag Scopes
 
-Use `:#tag:` to apply a tag to all following cards in a file, without adding `#tag` to each card:
+Use `:#tag:` to apply a tag to a block of cards. Close with `:#/tag:`:
 
 ```markdown
-:#programming:
+:#python:
 
-What is a variable? ::: A named storage location
-What is a function? ::: A reusable block of code
-What is a loop? ::: A control structure for repetition
+What is a list? ::: An ordered, mutable collection
+What is a dict? ::: A key-value mapping
 
-:#:
+:#/python:
 ```
 
-All three cards above will have the `#programming` tag. Use `:#:` to clear all scoped tags.
-
-Multiple scopes can be stacked:
+Both cards get the `#python` tag. Scopes are nestable with named closes:
 
 ```markdown
-:#math:
-:#algebra:
+:#python:
+:#decorators:
 
-What is a polynomial? ::: An expression with variables and coefficients
+What is @property? ::: A decorator that creates a managed attribute
 
-:#:
+:#/decorators:
+
+What is a generator? ::: A function that yields values lazily
+
+:#/python:
 ```
 
-The card above gets both `#math` and `#algebra` tags.
+The first card gets both `#python` and `#decorators`. The second card gets only `#python`.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `:FlashcardsReview` | Start review session (shows tag picker with due counts) |
-| `:FlashcardsReview #tag` | Review cards with specific tag (supports Tab completion) |
-| `:FlashcardsScan` | Scan directories for cards |
-| `:FlashcardsStats` | Show statistics |
-| `:FlashcardsBrowse` | Browse cards (Telescope) |
-| `:FlashcardsDue` | Show due cards (Telescope) |
-| `:FlashcardsTags` | Browse by tags (Telescope) |
-| `:FlashcardsInit` | Initialize in current directory |
-
-### Tag Picker
-
-Running `:FlashcardsReview` without arguments opens a tag picker that shows:
-- Due count for each tag (how many cards need review now)
-- Total card count per tag
-- Tags sorted by due count (most urgent first)
-
-```
-Select tag to review:
-> All cards (5 cards due)
-  #math (3 cards due)
-  #programming (2 cards due)
-  #history (0 cards due)
-```
-
-Use Tab completion with `:FlashcardsReview #` to quickly filter by tag.
+| `:FlashcardsReview [tag]` | Start review session, optionally filtered by tag |
+| `:FlashcardsScan` | Scan directories for new/changed cards |
+| `:FlashcardsStats` | Show statistics dashboard |
+| `:FlashcardsBrowse` | Browse all cards (Telescope) |
+| `:FlashcardsDue` | Browse due cards (Telescope) |
+| `:FlashcardsTags` | Browse by tag hierarchy (Telescope) |
+| `:FlashcardsOrphans` | Manage orphaned/lost cards (Telescope) |
 
 ## Review Keybindings
 
 | Key | Action |
 |-----|--------|
 | `Space` | Show answer |
-| `1` or `y` | Correct (knew it) |
-| `2` or `n` | Wrong (didn't know) |
+| `1` or `n` | Wrong |
+| `2` or `y` | Correct |
 | `s` | Skip card |
 | `u` | Undo last answer |
-| `e` | Edit card source |
+| `e` | Edit card source file |
 | `q` or `Esc` | Quit session |
 
 ## Configuration
@@ -233,24 +235,33 @@ Use Tab completion with `:FlashcardsReview #` to quickly filter by tag.
 ```lua
 require("flashcards").setup({
     -- Directories to scan for cards
-    directories = { "~/notes" },
+    directories = { "~/notes/flashcards/" },
 
-    -- Database location (pick one):
-    -- Option 1: Directory path (db_filename will be appended)
+    -- Storage backend: "json" (default)
+    -- SQLite backend planned for future release
+    storage = "json",
+
+    -- Where to store the data file
+    -- Directory path: appends "flashcards.json" automatically
+    -- File path: used as-is
+    -- nil: uses first configured directory
     db_path = "~/notes/assets/",
-    -- Option 2: Full file path
-    -- db_path = "~/.local/share/nvim/flashcards.db",
-    -- Option 3: Leave nil, uses db_filename in each configured directory (default)
-    -- db_path = nil,
-    -- db_filename = ".flashcards.db",
+
+    -- File patterns to scan
+    file_patterns = { "*.md", "*.markdown" },
+
+    -- Directories/patterns to ignore during scan
+    ignore_patterns = { "node_modules", ".git", ".obsidian", ".trash" },
 
     -- FSRS algorithm settings
     fsrs = {
-        target_correctness = 0.85,  -- 85% target (0.7-0.95)
-        maximum_interval = 365,      -- Max days between reviews
-        enable_fuzz = true,          -- Spread reviews slightly
+        target_correctness = 0.85,  -- 0.7-0.97, higher = more reviews
+        maximum_interval = 365,
+        enable_fuzz = true,
         weights = {
-            learning_steps = { 1, 10, 60 }, -- Minutes: 1m, 10m, 1h
+            initial_stability_correct = 3.0,
+            initial_stability_wrong = 0.5,
+            learning_steps = { 1, 10, 60 }, -- minutes
         },
     },
 
@@ -259,9 +270,11 @@ require("flashcards").setup({
         width = 0.7,
         height = 0.6,
         border = "rounded",
+        show_note = true, -- show source annotations during review
         keymaps = {
-            correct = "1",
-            wrong = "2",
+            show_answer = "<Space>",
+            wrong = "1",
+            correct = "2",
             quit = "q",
             skip = "s",
             undo = "u",
@@ -274,7 +287,7 @@ require("flashcards").setup({
         new_cards_per_day = 20,
     },
 
-    -- Auto-sync on file save
+    -- Auto-sync cards when markdown files are saved
     auto_sync = true,
 })
 ```
@@ -283,43 +296,57 @@ require("flashcards").setup({
 
 ### Card Tracking
 
-Cards are identified by a unique ID stored as a markdown comment (e.g., `<!-- fc:abc12345 -->`):
+Cards are identified by unique IDs stored as markdown comments (`<!-- fc:abc12345 -->`):
 
-- **IDs are auto-generated** - When you scan, new cards get IDs written to the source file
-- **Edit freely** - Change the front/back content without losing review history
-- **Stable identity** - As long as the ID comment stays, the card keeps its progress
+- **IDs are auto-generated** when you scan - new cards get IDs written back to the source file
+- **Edit freely** - change card content without losing review history
+- **Stable identity** - as long as the ID comment stays, the card keeps its progress
 - **Git-friendly** - IDs are visible in your notes and sync naturally
 
-By default, the database is stored in your notes directory (`.flashcards.db`) so you can sync it with git across devices. Alternatively, set `db_path` to store the database in a custom location (e.g., `~/.local/share/nvim/flashcards.db`).
+### Storage
+
+Card state is stored in a human-readable JSON file (`flashcards.json`). You can inspect and manually edit it. The file location is controlled by `db_path` in your config.
+
+A SQLite backend is planned for a future release, which will offer better performance for large collections (thousands of cards).
+
+### Orphan Management
+
+When a card's ID disappears from your files (deleted, moved outside scan dirs), it becomes "orphaned":
+
+- The card is **soft-deleted** (`active: false`) - review history is preserved
+- If the same ID reappears later, the card is **automatically reactivated**
+- Use `:FlashcardsOrphans` to permanently delete or manually reactivate orphaned cards
 
 ### Learning Phase
 
-New cards go through a learning phase with short intervals (1 min → 10 min → 1 hour by default) before graduating to the regular review schedule. During a session:
-
-- **New cards** may reappear within the same session if due within 30 minutes
-- This is intentional - it helps you learn new material before spacing it out
-- Once a card "graduates," it follows the longer spaced repetition schedule
+New cards go through learning steps (1min, 10min, 1hour by default) before graduating to the regular review schedule. During a session, learning cards may reappear if due within 30 minutes.
 
 ### Spaced Repetition
 
-The algorithm adjusts intervals based on your answers:
-- **Correct**: Interval increases (card becomes easier)
-- **Wrong**: Card returns to learning phase with short intervals
+The FSRS-inspired algorithm adjusts intervals based on your answers:
+- **Correct**: interval increases, difficulty decreases slightly
+- **Wrong**: card returns to learning phase with short intervals
 
-Target retention is configurable (default 85%) - higher targets mean shorter intervals.
+Target retention is configurable (default 85%) - higher targets mean shorter intervals and more reviews.
 
 ## Telescope Integration
 
+Pickers are registered automatically during setup. You can also load them explicitly:
+
 ```lua
--- In your telescope config
 require("telescope").load_extension("flashcards")
 ```
 
 Then use:
-- `:Telescope flashcards` or `:Telescope flashcards browse`
+- `:Telescope flashcards browse`
 - `:Telescope flashcards due`
 - `:Telescope flashcards tags`
 - `:Telescope flashcards search`
+- `:Telescope flashcards orphans`
+
+## Health Check
+
+Run `:checkhealth flashcards` to verify dependencies and configuration.
 
 ## License
 
