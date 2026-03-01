@@ -209,7 +209,7 @@ describe("fsrs", function()
             local card_state = { state = "new" }
             local new_state, intervals = scheduler:schedule(card_state, fsrs.Rating.Correct)
 
-            assert.equals("learning", new_state.state)
+            assert.equals("learning", new_state.status)
             assert.equals(1, new_state.reps)
             assert.equals(0, new_state.lapses)
             assert.equals(1, new_state.learning_step)
@@ -223,7 +223,7 @@ describe("fsrs", function()
             local card_state = { state = "new" }
             local new_state, intervals = scheduler:schedule(card_state, fsrs.Rating.Wrong)
 
-            assert.equals("learning", new_state.state)
+            assert.equals("learning", new_state.status)
             assert.equals(1, new_state.reps)
             assert.equals(1, new_state.lapses)
             assert.equals(0, new_state.learning_step)
@@ -247,7 +247,7 @@ describe("fsrs", function()
 
             local new_state = scheduler:schedule(card_state, fsrs.Rating.Correct)
 
-            assert.equals("learning", new_state.state)
+            assert.equals("learning", new_state.status)
             assert.equals(1, new_state.learning_step)
         end)
 
@@ -266,7 +266,7 @@ describe("fsrs", function()
 
             local new_state, intervals = scheduler:schedule(card_state, fsrs.Rating.Correct)
 
-            assert.equals("review", new_state.state)
+            assert.equals("review", new_state.status)
             assert.equals(0, new_state.learning_step)
             assert.is_true(intervals.days >= 1) -- Review interval
         end)
@@ -286,7 +286,7 @@ describe("fsrs", function()
 
             local new_state = scheduler:schedule(card_state, fsrs.Rating.Wrong)
 
-            assert.equals("learning", new_state.state)
+            assert.equals("learning", new_state.status)
             assert.equals(0, new_state.learning_step)
             assert.equals(1, new_state.lapses)
         end)
@@ -308,7 +308,7 @@ describe("fsrs", function()
 
             local new_state = scheduler:schedule(card_state, fsrs.Rating.Correct)
 
-            assert.equals("review", new_state.state)
+            assert.equals("review", new_state.status)
             assert.is_true(new_state.stability > 10.0)
         end)
 
@@ -327,7 +327,7 @@ describe("fsrs", function()
 
             local new_state = scheduler:schedule(card_state, fsrs.Rating.Wrong)
 
-            assert.equals("relearning", new_state.state)
+            assert.equals("relearning", new_state.status)
             assert.is_true(new_state.stability < 10.0) -- Reduced stability
             assert.equals(1, new_state.lapses)
         end)

@@ -253,25 +253,27 @@ function M.find_files(dir, config)
     end
   end
 
-  -- Build a combined pattern (scandir uses a single search_pattern)
-  local combined_pattern = nil
-  if #search_patterns == 1 then
-    combined_pattern = search_patterns[1]
-  elseif #search_patterns > 1 then
-    -- Use alternation for multiple patterns
-    combined_pattern = "(" .. table.concat(search_patterns, "|") .. ")"
+  -- Scan once per pattern and merge results (Lua patterns don't support |)
+  local files_set = {}
+  local files = {}
+  for _, pattern in ipairs(search_patterns) do
+    local found = scan.scan_dir(dir, {
+      hidden = false,
+      depth = 50,
+      search_pattern = pattern,
+    })
+    for _, f in ipairs(found) do
+      if not files_set[f] then
+        files_set[f] = true
+        files[#files + 1] = f
+      end
+    end
   end
-
-  local files = scan.scan_dir(dir, {
-    hidden = false,
-    depth = 50,
-    search_pattern = combined_pattern,
-  })
 
   -- Filter out ignored files
   local result = {}
   for _, file in ipairs(files) do
-    if not config.should_ignore or not config:should_ignore(file) then
+    if not config.should_ignore or not config.should_ignore(file) then
       result[#result + 1] = file
     end
   end

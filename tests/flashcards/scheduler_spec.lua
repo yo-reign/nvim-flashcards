@@ -99,6 +99,14 @@ describe("scheduler", function()
       table.insert(self._reviews, deep_copy(review))
     end
 
+    function store:remove_last_review()
+      if #self._reviews > 0 then
+        table.remove(self._reviews)
+        return true
+      end
+      return false
+    end
+
     function store:get_card(id)
       for _, card in ipairs(self._cards) do
         if card.id == id then

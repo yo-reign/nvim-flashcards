@@ -471,9 +471,16 @@ function M.edit_card()
     return
   end
 
-  -- Capture file info before closing
+  -- Resolve to absolute path from configured directories
   local file_path = card.file_path
   local line_nr = card.line or 1
+  for _, dir in ipairs(config.options.directories) do
+    local abs = dir .. "/" .. file_path
+    if vim.fn.filereadable(abs) == 1 then
+      file_path = abs
+      break
+    end
+  end
 
   M.close()
   vim.cmd(string.format("edit +%d %s", line_nr, vim.fn.fnameescape(file_path)))
@@ -482,9 +489,11 @@ end
 --- Close the review session and unmount the popup.
 --- Shows a summary notification if any cards were reviewed.
 function M.close()
-  if state.popup then
-    state.popup:unmount()
-    state.popup = nil
+  -- Nil popup first to prevent re-entrant close from BufLeave
+  local popup = state.popup
+  state.popup = nil
+  if popup then
+    popup:unmount()
   end
 
   if state.session then

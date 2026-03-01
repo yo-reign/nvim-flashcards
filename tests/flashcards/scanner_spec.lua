@@ -488,7 +488,7 @@ describe("scanner", function()
           file_patterns = { "*.md" },
           ignore_patterns = { "node_modules" },
         },
-        should_ignore = function(_, filepath)
+        should_ignore = function(filepath)
           return filepath:find("node_modules", 1, true) ~= nil
         end,
       }

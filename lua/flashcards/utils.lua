@@ -99,9 +99,12 @@ function M.expand_template_vars(text, rel_path, scan_root)
   -- file.path: full relative path without extension
   local path = path_no_ext
 
-  text = text:gsub("{{file%.name}}", name)
-  text = text:gsub("{{file%.dir}}", dir)
-  text = text:gsub("{{file%.path}}", path)
+  -- Escape % in replacements to prevent Lua pattern substitution errors
+  -- Note: wrap inner gsub in parens to discard the count return value,
+  -- which would otherwise be passed as the max-replacements arg to outer gsub.
+  text = text:gsub("{{file%.name}}", (name:gsub("%%", "%%%%")))
+  text = text:gsub("{{file%.dir}}", (dir:gsub("%%", "%%%%")))
+  text = text:gsub("{{file%.path}}", (path:gsub("%%", "%%%%")))
 
   return text
 end
@@ -115,7 +118,7 @@ end
 --- @return string[] tags without the `#` prefix
 function M.parse_tags(text)
   local tags = {}
-  for tag in text:gmatch("#([%w_/]+)") do
+  for tag in text:gmatch("#([%w_/%-]+)") do
     tags[#tags + 1] = tag
   end
   return tags
@@ -125,7 +128,7 @@ end
 --- @param text string
 --- @return string
 function M.strip_tags(text)
-  local result = text:gsub("%s*#[%w_/]+", "")
+  local result = text:gsub("%s*#[%w_/%-]+", "")
   return M.trim(result)
 end
 
@@ -163,7 +166,7 @@ end
 --- @return string[]
 function M.lines(s)
   local result = {}
-  for line in s:gmatch("([^\n]*)\n?") do
+  for line in s:gmatch("([^\r\n]*)\r?\n?") do
     result[#result + 1] = line
   end
   -- Remove trailing empty string from final newline
@@ -252,12 +255,19 @@ end
 --- @return boolean success
 --- @return string|nil error
 function M.write_file(path, content)
-  local f, err = io.open(path, "w")
+  -- Atomic write: write to temp file then rename
+  local tmp_path = path .. ".tmp"
+  local f, err = io.open(tmp_path, "w")
   if not f then
     return false, err
   end
   f:write(content)
   f:close()
+  local ok, rename_err = os.rename(tmp_path, path)
+  if not ok then
+    os.remove(tmp_path)
+    return false, rename_err
+  end
   return true
 end
 

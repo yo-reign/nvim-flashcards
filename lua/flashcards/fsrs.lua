@@ -200,7 +200,7 @@ end
 function FSRS:schedule(card_state, rating, now)
     now = now or utils.now()
 
-    local state = card_state.state or M.State.New
+    local state = card_state.status or card_state.state or M.State.New
     local stability = card_state.stability or 0
     local difficulty = card_state.difficulty or self:init_difficulty()
     local last_review = card_state.last_review
@@ -227,7 +227,7 @@ function FSRS:schedule(card_state, rating, now)
 
         if rating == M.Rating.Correct then
             -- Correct on first try - start with good stability
-            new_state.state = M.State.Learning
+            new_state.status = M.State.Learning
             new_state.stability = self:init_stability(rating)
             new_state.difficulty = self:init_difficulty()
             new_state.learning_step = 1
@@ -235,7 +235,7 @@ function FSRS:schedule(card_state, rating, now)
             intervals.days = self:learning_interval(1)
         else
             -- Wrong on first try
-            new_state.state = M.State.Learning
+            new_state.status = M.State.Learning
             new_state.stability = self:init_stability(rating)
             new_state.difficulty = self:init_difficulty()
             new_state.learning_step = 0
@@ -253,7 +253,7 @@ function FSRS:schedule(card_state, rating, now)
 
             if next_step >= max_steps then
                 -- Graduated to review
-                new_state.state = M.State.Review
+                new_state.status = M.State.Review
                 new_state.stability = self:next_recall_stability(difficulty, stability, r)
                 new_state.difficulty = self:next_difficulty(difficulty, rating)
                 new_state.learning_step = 0
@@ -261,7 +261,7 @@ function FSRS:schedule(card_state, rating, now)
                 intervals.days = self:next_interval(new_state.stability)
             else
                 -- Continue learning
-                new_state.state = state
+                new_state.status = state
                 new_state.stability = stability
                 new_state.difficulty = difficulty
                 new_state.learning_step = next_step
@@ -270,7 +270,7 @@ function FSRS:schedule(card_state, rating, now)
             end
         else
             -- Wrong - reset learning progress
-            new_state.state = state
+            new_state.status = state
             new_state.stability = self:init_stability(rating)
             new_state.difficulty = self:next_difficulty(difficulty, rating)
             new_state.learning_step = 0
@@ -283,7 +283,7 @@ function FSRS:schedule(card_state, rating, now)
 
         if rating == M.Rating.Correct then
             -- Successful review - increase stability
-            new_state.state = M.State.Review
+            new_state.status = M.State.Review
             new_state.stability = self:next_recall_stability(difficulty, stability, r)
             new_state.difficulty = self:next_difficulty(difficulty, rating)
             new_state.learning_step = 0
@@ -291,7 +291,7 @@ function FSRS:schedule(card_state, rating, now)
             intervals.days = self:next_interval(new_state.stability)
         else
             -- Failed review - go to relearning
-            new_state.state = M.State.Relearning
+            new_state.status = M.State.Relearning
             new_state.stability = self:next_forget_stability(difficulty, stability)
             new_state.difficulty = self:next_difficulty(difficulty, rating)
             new_state.learning_step = 0
@@ -301,7 +301,7 @@ function FSRS:schedule(card_state, rating, now)
     end
 
     -- Apply fuzz if in review state with interval >= 1 day
-    if new_state.state == M.State.Review and intervals.days >= 1 then
+    if new_state.status == M.State.Review and intervals.days >= 1 then
         intervals.days = self:fuzz_interval(intervals.days)
     end
 

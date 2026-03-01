@@ -44,6 +44,7 @@ function M.new_session(store, fsrs, opts)
   self.start_time = utils.now()
   self.tag = opts.tag or nil
   self.new_cards_limit = opts.new_cards_per_day or 20
+  self.initial_count = 0
   return self
 end
 
@@ -109,6 +110,8 @@ function Session:load_cards()
       ni = ni + 1
     end
   end
+
+  self.initial_count = #self.queue
 end
 
 -- ============================================================================
@@ -184,15 +187,7 @@ function Session:answer(rating)
 
   -- Schedule via FSRS
   local new_state, intervals = self.fsrs:schedule(state_before, rating, now)
-  local status_after = new_state.status or new_state.state
-
-  -- Normalize: FSRS may use .state or .status
-  if new_state.state and not new_state.status then
-    new_state.status = new_state.state
-  end
-  if new_state.status and not new_state.state then
-    new_state.state = new_state.status
-  end
+  local status_after = new_state.status
 
   -- Determine if card was reversed
   local is_reversed = self.reversed_map[card.id] or false
@@ -223,7 +218,7 @@ function Session:answer(rating)
   self.store:update_card_state(card.id, new_state)
 
   -- Re-queue if card is still in learning/relearning with short interval
-  local final_status = new_state.status or new_state.state
+  local final_status = new_state.status
   if (final_status == "learning" or final_status == "relearning")
     and intervals.days <= REQUEUE_THRESHOLD_DAYS then
     -- Insert after current position (not at the very end)
@@ -250,9 +245,8 @@ function Session:undo()
   self.store:update_card_state(last_review.card.id, last_review.state_before)
 
   -- Remove the last review from store
-  -- (pop the last entry from the store's review log)
-  if self.store._reviews and #self.store._reviews > 0 then
-    table.remove(self.store._reviews)
+  if self.store.remove_last_review then
+    self.store:remove_last_review()
   end
 
   -- Restore queue position: put the card back at the position it was answered from
@@ -325,7 +319,7 @@ end
 --- Get a summary of the current session.
 --- @return table summary { total, reviewed, correct, wrong, new_seen, elapsed, elapsed_formatted, retention_rate }
 function Session:summary()
-  local total = #self.queue
+  local total = self.initial_count > 0 and self.initial_count or #self.queue
   local reviewed = #self.reviews
   local correct = 0
   local wrong = 0

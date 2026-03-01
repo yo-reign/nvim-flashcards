@@ -23,6 +23,22 @@ local M = {}
 -- Shared Helpers
 -- ============================================================================
 
+--- Resolve a relative card file_path to an absolute path.
+--- @param file_path string relative path from card
+--- @return string absolute path (or original if not resolved)
+local function resolve_path(file_path)
+  if not config.options or not config.options.directories then
+    return file_path
+  end
+  for _, dir in ipairs(config.options.directories) do
+    local abs = dir .. "/" .. file_path
+    if vim.fn.filereadable(abs) == 1 then
+      return abs
+    end
+  end
+  return file_path
+end
+
 --- Get the state icon for a card status from config.
 --- @param status string card state ("new", "learning", "review", "relearning")
 --- @return string icon
@@ -198,7 +214,7 @@ function M.browse(store, opts)
         local entry = action_state.get_selected_entry()
         if entry and entry.value then
           local card = entry.value
-          vim.cmd(string.format("edit +%d %s", card.line or 1, vim.fn.fnameescape(card.file_path)))
+          vim.cmd(string.format("edit +%d %s", card.line or 1, vim.fn.fnameescape(resolve_path(card.file_path))))
         end
       end)
 
@@ -266,7 +282,7 @@ function M.due(store, opts)
         local entry = action_state.get_selected_entry()
         if entry and entry.value then
           local card = entry.value
-          vim.cmd(string.format("edit +%d %s", card.line or 1, vim.fn.fnameescape(card.file_path)))
+          vim.cmd(string.format("edit +%d %s", card.line or 1, vim.fn.fnameescape(resolve_path(card.file_path))))
         end
       end)
       map("n", "<C-e>", function()
@@ -274,7 +290,7 @@ function M.due(store, opts)
         local entry = action_state.get_selected_entry()
         if entry and entry.value then
           local card = entry.value
-          vim.cmd(string.format("edit +%d %s", card.line or 1, vim.fn.fnameescape(card.file_path)))
+          vim.cmd(string.format("edit +%d %s", card.line or 1, vim.fn.fnameescape(resolve_path(card.file_path))))
         end
       end)
 
@@ -355,7 +371,7 @@ function M.tags(store, opts)
                   vim.cmd(string.format(
                     "edit +%d %s",
                     card.line or 1,
-                    vim.fn.fnameescape(card.file_path)
+                    vim.fn.fnameescape(resolve_path(card.file_path))
                   ))
                 end
               end)
@@ -426,7 +442,7 @@ function M.search(store, opts)
         local entry = action_state.get_selected_entry()
         if entry and entry.value then
           local card = entry.value
-          vim.cmd(string.format("edit +%d %s", card.line or 1, vim.fn.fnameescape(card.file_path)))
+          vim.cmd(string.format("edit +%d %s", card.line or 1, vim.fn.fnameescape(resolve_path(card.file_path))))
         end
       end)
       return true

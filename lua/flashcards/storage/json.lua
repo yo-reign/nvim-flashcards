@@ -121,7 +121,20 @@ function JsonStore:save()
     return
   end
   local encoded = vim.fn.json_encode(self.data)
-  utils.write_file(self.path, encoded)
+  local ok, err = utils.write_file(self.path, encoded)
+  if not ok then
+    vim.notify("nvim-flashcards: failed to save data: " .. tostring(err), vim.log.levels.ERROR)
+  end
+end
+
+--- Remove the most recent review from the review log (for undo support).
+--- @return boolean true if a review was removed
+function JsonStore:remove_last_review()
+  if #self.data.reviews > 0 then
+    table.remove(self.data.reviews)
+    return true
+  end
+  return false
 end
 
 --- Save data and clear in-memory store.
