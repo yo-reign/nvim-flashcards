@@ -1,0 +1,451 @@
+--- State machine parser for extracting flashcards from markdown files.
+--- @module flashcards.parser
+local M = {}
+
+local utils = require("flashcards.utils")
+
+-- ============================================================================
+-- State Constants
+-- ============================================================================
+
+local STATE_NORMAL = "NORMAL"
+local STATE_FENCED_FRONT = "FENCED_FRONT"
+local STATE_FENCED_BACK = "FENCED_BACK"
+
+-- ============================================================================
+-- Pattern Helpers
+-- ============================================================================
+
+--- Check if a line opens a fenced code block (``` with optional language).
+--- @param line string
+--- @return boolean
+local function is_code_fence(line)
+  return line:match("^%s*```") ~= nil
+end
+
+--- Check if a line is a fenced card opener (:::card or :?:card).
+--- Returns the reversible flag and the rest of the line (for ID extraction).
+--- @param line string
+--- @return boolean|nil is_fenced, boolean reversible, string rest
+local function match_fenced_open(line)
+  -- :::card or :::card <!-- fc:id -->
+  local rest = line:match("^:::card(.*)$")
+  if rest then
+    return true, false, rest
+  end
+  -- :?:card or :?:card <!-- fc:id -->
+  rest = line:match("^:%?:card(.*)$")
+  if rest then
+    return true, true, rest
+  end
+  return nil, false, ""
+end
+
+--- Check if a line is a fenced card closer (:::end or :?:end).
+--- Returns the match flag, whether it was a reversible closer, and the rest of
+--- the line (for tag extraction).
+--- @param line string
+--- @return boolean matched, boolean reversible, string rest
+local function match_fenced_close(line)
+  -- :::end or :::end #tags
+  local rest = line:match("^:::end(.*)$")
+  if rest then
+    return true, false, rest
+  end
+  -- :?:end or :?:end #tags
+  rest = line:match("^:%?:end(.*)$")
+  if rest then
+    return true, true, rest
+  end
+  return false, false, ""
+end
+
+--- Check if a line is a front/back separator (:-:) on its own.
+--- @param line string
+--- @return boolean
+local function is_separator(line)
+  return utils.trim(line) == ":-:"
+end
+
+--- Check if a line opens a tag scope (:#tagname:).
+--- Returns the tag name or nil.
+--- @param line string
+--- @param file_path string
+--- @param scan_root string
+--- @return string|nil tag_name
+local function match_scope_open(line, file_path, scan_root)
+  local tag = line:match("^:#([^/][^:]*):$")
+  if tag then
+    return utils.expand_template_vars(tag, file_path, scan_root)
+  end
+  return nil
+end
+
+--- Check if a line closes a tag scope (:#/tagname:).
+--- Returns the tag name or nil.
+--- @param line string
+--- @param file_path string
+--- @param scan_root string
+--- @return string|nil tag_name
+local function match_scope_close(line, file_path, scan_root)
+  local tag = line:match("^:#/([^:]+):$")
+  if tag then
+    return utils.expand_template_vars(tag, file_path, scan_root)
+  end
+  return nil
+end
+
+--- Try to parse a line as an inline card (front ::: back or front :?: back).
+--- Returns card data or nil.
+--- @param line string
+--- @param line_num number
+--- @param file_path string
+--- @param scope_tags string[]
+--- @return table|nil card
+local function try_parse_inline(line, line_num, file_path, scope_tags)
+  -- Try :?: first (reversible), then ::: (normal)
+  local front, back, reversible
+
+  local f, b = line:match("^(.-)%s+:%?:%s+(.+)$")
+  if f and b then
+    front, back, reversible = f, b, true
+  else
+    f, b = line:match("^(.-)%s+:::%s+(.+)$")
+    if f and b then
+      front, back, reversible = f, b, false
+    end
+  end
+
+  if not front then
+    return nil
+  end
+
+  -- Extract card ID and flags from the back portion
+  local id, flags = utils.extract_card_id(back)
+  local suspended = flags and flags.suspended or false
+
+  -- Strip the <!-- fc:... --> comment from back
+  back = back:gsub("%s*<!%-%-% *fc:[%w]+.-% *%-%->", "")
+
+  -- Extract tags from back
+  local inline_tags = utils.parse_tags(back)
+
+  -- Strip tags from back
+  back = utils.strip_tags(back)
+
+  -- Merge scope tags with inline tags (scope first, then inline)
+  local all_tags = {}
+  for _, t in ipairs(scope_tags) do
+    all_tags[#all_tags + 1] = t
+  end
+  for _, t in ipairs(inline_tags) do
+    all_tags[#all_tags + 1] = t
+  end
+
+  return {
+    front = utils.trim(front),
+    back = utils.trim(back),
+    reversible = reversible,
+    id = id,
+    suspended = suspended,
+    tags = all_tags,
+    note = nil,
+    line = line_num,
+    file_path = file_path,
+  }
+end
+
+--- Trim leading and trailing blank lines from a list of lines and join.
+--- @param line_list string[]
+--- @return string
+local function trim_multiline(line_list)
+  -- Find first non-blank line
+  local first = 1
+  for i = 1, #line_list do
+    if line_list[i]:match("%S") then
+      first = i
+      break
+    end
+  end
+  -- Find last non-blank line
+  local last = #line_list
+  for i = #line_list, 1, -1 do
+    if line_list[i]:match("%S") then
+      last = i
+      break
+    end
+  end
+  -- If all blank, return empty
+  if first > last then
+    return ""
+  end
+  local trimmed = {}
+  for i = first, last do
+    trimmed[#trimmed + 1] = line_list[i]
+  end
+  return table.concat(trimmed, "\n")
+end
+
+--- Collect the current scope tags from the scope stack.
+--- @param scope_stack table[]
+--- @return string[]
+local function collect_scope_tags(scope_stack)
+  local tags = {}
+  for _, scope in ipairs(scope_stack) do
+    tags[#tags + 1] = scope.tag
+  end
+  return tags
+end
+
+-- ============================================================================
+-- Main Parser
+-- ============================================================================
+
+--- Parse markdown content and extract flashcards.
+---
+--- Uses a three-state machine:
+---   NORMAL -> FENCED_FRONT (on :::card or :?:card)
+---   FENCED_FRONT -> FENCED_BACK (on :-:)
+---   FENCED_BACK -> NORMAL (on :::end or :?:end)
+---
+--- @param file_path string relative path to the file
+--- @param content string file content
+--- @param scan_root string the scan root directory
+--- @return table[] cards list of card tables
+--- @return table[] errors list of error tables { line, message }
+function M.parse(file_path, content, scan_root)
+  local cards = {}
+  local errors = {}
+
+  if content == "" then
+    return cards, errors
+  end
+
+  local file_lines = utils.lines(content)
+  local state = STATE_NORMAL
+  local code_depth = 0 -- tracks ``` nesting in NORMAL state
+  local fenced_code_depth = 0 -- tracks ``` nesting inside fenced cards
+
+  -- Scope tracking
+  local scope_stack = {} -- { { tag = "python", line = 5 }, ... }
+
+  -- Fenced card accumulator
+  local fenced = {
+    reversible = false,
+    id = nil,
+    suspended = false,
+    front_lines = {},
+    back_lines = {},
+    open_line = 0,
+    has_separator = false,
+  }
+
+  -- Track last card index for note annotation attachment
+  local last_card_idx = nil
+  local last_card_end_line = nil
+
+  for line_num, line in ipairs(file_lines) do
+    if state == STATE_NORMAL then
+      -- Check for code fences in normal state
+      if is_code_fence(line) then
+        if code_depth == 0 then
+          code_depth = 1
+        else
+          code_depth = 0
+        end
+        goto continue
+      end
+
+      -- If inside a code block, skip everything
+      if code_depth > 0 then
+        goto continue
+      end
+
+      -- Check for note annotation (must be line immediately after a card)
+      local note = utils.extract_note(line)
+      if note and last_card_idx and last_card_end_line == line_num - 1 then
+        -- Expand template variables in note
+        note = utils.expand_template_vars(note, file_path, scan_root)
+        cards[last_card_idx].note = note
+        goto continue
+      end
+
+      -- Check for scope open: :#tagname:
+      local scope_tag = match_scope_open(line, file_path, scan_root)
+      if scope_tag then
+        scope_stack[#scope_stack + 1] = { tag = scope_tag, line = line_num }
+        goto continue
+      end
+
+      -- Check for scope close: :#/tagname:
+      local close_tag = match_scope_close(line, file_path, scan_root)
+      if close_tag then
+        if #scope_stack == 0 then
+          errors[#errors + 1] = {
+            line = line_num,
+            message = "Scope close :#/" .. close_tag .. ": without matching open",
+          }
+        else
+          local top = scope_stack[#scope_stack]
+          if top.tag ~= close_tag then
+            errors[#errors + 1] = {
+              line = line_num,
+              message = "Scope close mismatch: expected :#/" .. top.tag .. ": but got :#/" .. close_tag .. ":",
+            }
+          else
+            scope_stack[#scope_stack] = nil
+          end
+        end
+        goto continue
+      end
+
+      -- Check for fenced card open
+      local is_fenced, reversible, rest = match_fenced_open(line)
+      if is_fenced then
+        local id, flags = utils.extract_card_id(rest)
+        fenced = {
+          reversible = reversible,
+          id = id,
+          suspended = flags and flags.suspended or false,
+          front_lines = {},
+          back_lines = {},
+          open_line = line_num,
+          has_separator = false,
+        }
+        fenced_code_depth = 0
+        state = STATE_FENCED_FRONT
+        goto continue
+      end
+
+      -- Try inline card
+      local scope_tags = collect_scope_tags(scope_stack)
+      local card = try_parse_inline(line, line_num, file_path, scope_tags)
+      if card then
+        cards[#cards + 1] = card
+        last_card_idx = #cards
+        last_card_end_line = line_num
+      end
+
+    elseif state == STATE_FENCED_FRONT then
+      -- Track code fences inside fenced card
+      if is_code_fence(line) then
+        if fenced_code_depth == 0 then
+          fenced_code_depth = 1
+        else
+          fenced_code_depth = 0
+        end
+        fenced.front_lines[#fenced.front_lines + 1] = line
+        goto continue
+      end
+
+      -- If inside a code block within the fenced card, just accumulate
+      if fenced_code_depth > 0 then
+        fenced.front_lines[#fenced.front_lines + 1] = line
+        goto continue
+      end
+
+      -- Check for separator
+      if is_separator(line) then
+        fenced.has_separator = true
+        state = STATE_FENCED_BACK
+        fenced_code_depth = 0
+        goto continue
+      end
+
+      -- Check for premature close (no separator)
+      local matched, _, close_rest = match_fenced_close(line)
+      if matched then
+        errors[#errors + 1] = {
+          line = fenced.open_line,
+          message = "Fenced card missing :-: separator",
+        }
+        state = STATE_NORMAL
+        fenced_code_depth = 0
+        goto continue
+      end
+
+      -- Accumulate front content
+      fenced.front_lines[#fenced.front_lines + 1] = line
+
+    elseif state == STATE_FENCED_BACK then
+      -- Track code fences inside fenced card
+      if is_code_fence(line) then
+        if fenced_code_depth == 0 then
+          fenced_code_depth = 1
+        else
+          fenced_code_depth = 0
+        end
+        fenced.back_lines[#fenced.back_lines + 1] = line
+        goto continue
+      end
+
+      -- If inside a code block within the fenced card, just accumulate
+      if fenced_code_depth > 0 then
+        fenced.back_lines[#fenced.back_lines + 1] = line
+        goto continue
+      end
+
+      -- Check for fenced close
+      local matched, _, close_rest = match_fenced_close(line)
+      if matched then
+        -- Extract tags from close line
+        local close_tags = utils.parse_tags(close_rest)
+
+        -- Merge scope tags with close-line tags
+        local scope_tags = collect_scope_tags(scope_stack)
+        local all_tags = {}
+        for _, t in ipairs(scope_tags) do
+          all_tags[#all_tags + 1] = t
+        end
+        for _, t in ipairs(close_tags) do
+          all_tags[#all_tags + 1] = t
+        end
+
+        local card = {
+          front = trim_multiline(fenced.front_lines),
+          back = trim_multiline(fenced.back_lines),
+          reversible = fenced.reversible,
+          id = fenced.id,
+          suspended = fenced.suspended,
+          tags = all_tags,
+          note = nil,
+          line = fenced.open_line,
+          file_path = file_path,
+        }
+        cards[#cards + 1] = card
+        last_card_idx = #cards
+        last_card_end_line = line_num
+
+        state = STATE_NORMAL
+        fenced_code_depth = 0
+        goto continue
+      end
+
+      -- Accumulate back content
+      fenced.back_lines[#fenced.back_lines + 1] = line
+    end
+
+    ::continue::
+  end
+
+  -- Check for unclosed fenced card at EOF
+  if state ~= STATE_NORMAL then
+    errors[#errors + 1] = {
+      line = fenced.open_line,
+      message = "Unclosed fenced card (started at line " .. fenced.open_line .. ")",
+    }
+  end
+
+  -- Check for unclosed scopes at EOF
+  for i = #scope_stack, 1, -1 do
+    local scope = scope_stack[i]
+    errors[#errors + 1] = {
+      line = scope.line,
+      message = "Unclosed tag scope :#" .. scope.tag .. ": (opened at line " .. scope.line .. ")",
+    }
+  end
+
+  return cards, errors
+end
+
+return M
