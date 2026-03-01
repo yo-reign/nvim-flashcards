@@ -1,357 +1,395 @@
--- Utility functions for nvim-flashcards
-
+--- Utility functions for nvim-flashcards
+--- @module flashcards.utils
 local M = {}
 
---- Generate a new unique card ID
----@return string 8-character alphanumeric ID
-function M.generate_new_id()
-    local chars = "abcdefghijklmnopqrstuvwxyz0123456789"
-    local id = ""
-    math.randomseed(os.time() + math.floor(vim.loop.hrtime() / 1000))
-    for _ = 1, 8 do
-        local idx = math.random(1, #chars)
-        id = id .. chars:sub(idx, idx)
-    end
-    return id
+-- Seed random number generator once on load
+do
+  math.randomseed(vim.loop.hrtime())
+  for _ = 1, 5 do
+    math.random()
+  end
 end
 
---- Extract card ID from comment (<!-- fc:abc123 -->)
----@param text string Text that may contain ID comment
----@return string|nil ID if found
+-- ============================================================================
+-- ID Generation
+-- ============================================================================
+
+local ID_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789"
+local ID_LEN = 8
+
+--- Generate a unique 8-character alphanumeric ID.
+--- @return string
+function M.generate_id()
+  local id = {}
+  for i = 1, ID_LEN do
+    local idx = math.random(1, #ID_CHARS)
+    id[i] = ID_CHARS:sub(idx, idx)
+  end
+  return table.concat(id)
+end
+
+--- Extract a card ID and flags from a flashcard comment.
+--- Matches `<!-- fc:ID [!suspended] -->`.
+--- @param text string
+--- @return string|nil id
+--- @return table flags
 function M.extract_card_id(text)
-    return text:match("<!%-%-%s*fc:([%w]+)%s*%-%->")
+  local id, rest = text:match("<!%-%-% *fc:([%w]+)(.-) *%-%->")
+  if not id then
+    return nil, {}
+  end
+  local flags = {}
+  if rest:match("!suspended") then
+    flags.suspended = true
+  end
+  return id, flags
 end
 
---- Format card ID as comment
----@param id string Card ID
----@return string Formatted comment
-function M.format_card_id(id)
-    return "<!-- fc:" .. id .. " -->"
+--- Format a card ID as an HTML comment.
+--- @param id string
+--- @param flags table|nil optional flags (e.g., { suspended = true })
+--- @return string
+function M.format_card_id(id, flags)
+  local parts = { "<!-- fc:" .. id }
+  if flags and flags.suspended then
+    parts[#parts + 1] = " !suspended"
+  end
+  parts[#parts + 1] = " -->"
+  return table.concat(parts)
 end
 
---- Strip card ID comment from text
----@param text string Text containing ID comment
----@return string Text without ID comment
-function M.strip_card_id(text)
-    return text:gsub("%s*<!%-%-%s*fc:[%w]+%s*%-%->%s*", " "):gsub("^%s+", ""):gsub("%s+$", "")
+-- ============================================================================
+-- Note Annotations
+-- ============================================================================
+
+--- Extract note content from a `<!-- note: ... -->` comment.
+--- @param text string
+--- @return string|nil
+function M.extract_note(text)
+  return text:match("<!%-%-% *note:% *(.-)% *%-%->")
 end
 
---- Normalize file path to absolute form for consistent storage/lookup
----@param path string File path
----@return string Normalized absolute path
-function M.normalize_path(path)
-    return vim.fn.fnamemodify(path, ":p")
+-- ============================================================================
+-- Template Variables
+-- ============================================================================
+
+--- Expand template variables in text.
+--- Supported variables:
+---   {{file.name}} - filename without extension
+---   {{file.dir}}  - parent directory (relative to scan_root)
+---   {{file.path}} - full relative path without extension
+--- @param text string the text containing template variables
+--- @param rel_path string relative file path (e.g., "math/algebra.md")
+--- @param scan_root string the scan root directory (unused but kept for API)
+--- @return string
+function M.expand_template_vars(text, rel_path, scan_root)
+  if not text:match("{{") then
+    return text
+  end
+
+  -- Remove extension
+  local path_no_ext = rel_path:match("^(.+)%..+$") or rel_path
+
+  -- file.name: just the filename without extension
+  local name = path_no_ext:match("([^/]+)$") or path_no_ext
+
+  -- file.dir: parent directory path
+  local dir = path_no_ext:match("^(.+)/[^/]+$") or ""
+
+  -- file.path: full relative path without extension
+  local path = path_no_ext
+
+  text = text:gsub("{{file%.name}}", name)
+  text = text:gsub("{{file%.dir}}", dir)
+  text = text:gsub("{{file%.path}}", path)
+
+  return text
 end
 
---- Legacy: Generate a stable card ID from content (for migration)
----@param file_path string Source file path
----@param front string Card front content
----@param back string Card back content
----@return string 16-character hex ID
-function M.generate_card_id(file_path, front, back)
-    local content = file_path .. "|" .. front .. "|" .. back
-    local hash = vim.fn.sha256(content)
-    return hash:sub(1, 16)
-end
+-- ============================================================================
+-- Tag Handling
+-- ============================================================================
 
---- Check if a path is a subpath of another
----@param child string Potential child path
----@param parent string Potential parent path
----@return boolean True if child is under parent
-function M.is_subpath(child, parent)
-    child = vim.fn.fnamemodify(child, ":p")
-    parent = vim.fn.fnamemodify(parent, ":p")
-
-    -- Ensure parent ends with separator
-    if not parent:match("/$") then
-        parent = parent .. "/"
-    end
-
-    return child:sub(1, #parent) == parent
-end
-
---- Get relative path from base
----@param filepath string Full file path
----@param base string Base directory
----@return string Relative path
-function M.relative_path(filepath, base)
-    filepath = vim.fn.fnamemodify(filepath, ":p")
-    base = vim.fn.fnamemodify(base, ":p")
-
-    if not base:match("/$") then
-        base = base .. "/"
-    end
-
-    if filepath:sub(1, #base) == base then
-        return filepath:sub(#base + 1)
-    end
-
-    return filepath
-end
-
---- Extract tags from file path
----@param filepath string File path relative to base
----@return table List of hierarchical tags
-function M.tags_from_path(filepath)
-    -- Remove file extension
-    local path_no_ext = filepath:gsub("%.[^%.]+$", "")
-
-    -- Normalize path separators and remove leading/trailing slashes
-    local tag = path_no_ext:gsub("\\", "/"):gsub("^/+", ""):gsub("/+$", "")
-
-    -- Generate hierarchical tags
-    local tags = {}
-    local parts = vim.split(tag, "/", { plain = true, trimempty = true })
-
-    local current = ""
-    for i, part in ipairs(parts) do
-        if part ~= "" then
-            if current == "" then
-                current = part
-            else
-                current = current .. "/" .. part
-            end
-            -- Don't add the filename itself as a separate tag if it matches parent
-            if i < #parts or (i > 1 and parts[i] ~= parts[i - 1]) or i == 1 then
-                table.insert(tags, current)
-            end
-        end
-    end
-
-    return tags
-end
-
---- Parse tags from a string (e.g., "#math #physics/quantum")
----@param text string Text containing hashtag tags
----@return table List of tags (without #)
+--- Parse tags from text. Tags are `#word` patterns where word can include `/`.
+--- @param text string
+--- @return string[] tags without the `#` prefix
 function M.parse_tags(text)
-    local tags = {}
-    for tag in text:gmatch("#([%w_/%-]+)") do
-        table.insert(tags, tag)
-    end
-    return tags
+  local tags = {}
+  for tag in text:gmatch("#([%w_/]+)") do
+    tags[#tags + 1] = tag
+  end
+  return tags
 end
 
---- Remove tags from text
----@param text string Text containing hashtag tags
----@return string Text with tags removed
+--- Remove all `#tag` patterns from text and trim trailing whitespace.
+--- @param text string
+--- @return string
 function M.strip_tags(text)
-    return text:gsub("%s*#[%w_/%-]+", ""):gsub("^%s+", ""):gsub("%s+$", "")
+  local result = text:gsub("%s*#[%w_/]+", "")
+  return M.trim(result)
 end
 
---- Trim whitespace from string
----@param s string Input string
----@return string Trimmed string
+-- ============================================================================
+-- String Utilities
+-- ============================================================================
+
+--- Trim leading and trailing whitespace.
+--- @param s string
+--- @return string
 function M.trim(s)
-    return s:match("^%s*(.-)%s*$")
+  return s:match("^%s*(.-)%s*$")
 end
 
---- Get current Unix timestamp
----@return integer Unix timestamp
-function M.now()
-    return os.time()
+--- Truncate a string to max length, appending "..." if truncated.
+--- @param s string
+--- @param max number
+--- @return string
+function M.truncate(s, max)
+  if #s <= max then
+    return s
+  end
+  return s:sub(1, max - 3) .. "..."
 end
 
---- Format Unix timestamp as human-readable date
----@param timestamp integer Unix timestamp
----@return string Formatted date
-function M.format_date(timestamp)
-    return os.date("%Y-%m-%d", timestamp)
-end
-
---- Format Unix timestamp as human-readable datetime
----@param timestamp integer Unix timestamp
----@return string Formatted datetime
-function M.format_datetime(timestamp)
-    return os.date("%Y-%m-%d %H:%M", timestamp)
-end
-
---- Format interval in days as human-readable string
----@param days number Interval in days
----@return string Formatted interval
-function M.format_interval(days)
-    if days < 1 then
-        local minutes = math.floor(days * 24 * 60)
-        if minutes < 60 then
-            return minutes .. "m"
-        else
-            return math.floor(minutes / 60) .. "h"
-        end
-    elseif days < 30 then
-        return math.floor(days) .. "d"
-    elseif days < 365 then
-        return string.format("%.1fmo", days / 30)
-    else
-        return string.format("%.1fy", days / 365)
-    end
-end
-
---- Calculate days between two timestamps
----@param from integer Start timestamp
----@param to integer End timestamp
----@return number Days between timestamps
-function M.days_between(from, to)
-    return (to - from) / 86400
-end
-
---- Add days to a timestamp
----@param timestamp integer Unix timestamp
----@param days number Days to add
----@return integer New timestamp
-function M.add_days(timestamp, days)
-    return timestamp + math.floor(days * 86400)
-end
-
---- Get start of day for a timestamp
----@param timestamp integer Unix timestamp
----@return integer Start of day timestamp
-function M.start_of_day(timestamp)
-    local date = os.date("*t", timestamp)
-    date.hour = 0
-    date.min = 0
-    date.sec = 0
-    return os.time(date)
-end
-
---- Check if a card is due for review
----@param due_date integer|nil Due date timestamp
----@return boolean True if due
-function M.is_due(due_date)
-    if not due_date then
-        return true -- New cards are always "due"
-    end
-    return due_date <= M.now()
-end
-
---- Deep copy a table
----@param t table Table to copy
----@return table Copied table
-function M.deep_copy(t)
-    if type(t) ~= "table" then
-        return t
-    end
-    local copy = {}
-    for k, v in pairs(t) do
-        copy[k] = M.deep_copy(v)
-    end
-    return copy
-end
-
---- Debounce a function
----@param fn function Function to debounce
----@param ms integer Debounce time in milliseconds
----@return function Debounced function
-function M.debounce(fn, ms)
-    local timer = nil
-    return function(...)
-        local args = { ... }
-        if timer then
-            timer:stop()
-        end
-        timer = vim.loop.new_timer()
-        timer:start(ms, 0, vim.schedule_wrap(function()
-            fn(unpack(args))
-            timer = nil
-        end))
-    end
-end
-
---- Async wrapper using plenary
----@param fn function Async function
-function M.async(fn)
-    local async = require("plenary.async")
-    async.run(fn)
-end
-
---- Read file contents
----@param filepath string Path to file
----@return string|nil Content or nil on error
-function M.read_file(filepath)
-    local file = io.open(filepath, "r")
-    if not file then
-        return nil
-    end
-    local content = file:read("*a")
-    file:close()
-    return content
-end
-
---- Get all files matching patterns in a directory (recursive)
----@param dir string Directory to scan
----@param patterns table List of glob patterns
----@param ignore table List of ignore patterns
----@return table List of file paths
-function M.find_files(dir, patterns, ignore)
-    local files = {}
-    local scan = require("plenary.scandir")
-
-    for _, pattern in ipairs(patterns) do
-        local ext = pattern:match("%.(%w+)$")
-        if ext then
-            local found = scan.scan_dir(dir, {
-                hidden = false,
-                depth = 50,
-                search_pattern = "%." .. ext .. "$",
-            })
-
-            for _, file in ipairs(found) do
-                local should_ignore = false
-                for _, ig in ipairs(ignore or {}) do
-                    if file:match(ig) then
-                        should_ignore = true
-                        break
-                    end
-                end
-                if not should_ignore then
-                    table.insert(files, file)
-                end
-            end
-        end
-    end
-
-    return files
-end
-
---- Truncate string to max length
----@param s string Input string
----@param max_len integer Maximum length
----@param suffix string|nil Suffix to add if truncated (default "...")
----@return string Truncated string
-function M.truncate(s, max_len, suffix)
-    suffix = suffix or "..."
-    if #s <= max_len then
-        return s
-    end
-    return s:sub(1, max_len - #suffix) .. suffix
-end
-
---- Escape string for use in Lua pattern
----@param s string Input string
----@return string Escaped string
+--- Escape Lua pattern special characters.
+--- @param s string
+--- @return string
 function M.escape_pattern(s)
-    return s:gsub("[%(%)%.%%%+%-%*%?%[%]%^%$]", "%%%1")
+  return s:gsub("([%(%)%.%%%+%-%*%?%[%]%^%$])", "%%%1")
 end
 
---- Get lines from string
----@param s string Multi-line string
----@return table List of lines
+--- Split a string into lines.
+--- @param s string
+--- @return string[]
 function M.lines(s)
-    local result = {}
-    for line in s:gmatch("([^\n]*)\n?") do
-        table.insert(result, line)
-    end
-    -- Remove trailing empty line if exists
-    if result[#result] == "" then
-        table.remove(result)
-    end
-    return result
+  local result = {}
+  for line in s:gmatch("([^\n]*)\n?") do
+    result[#result + 1] = line
+  end
+  -- Remove trailing empty string from final newline
+  if #result > 0 and result[#result] == "" then
+    result[#result] = nil
+  end
+  return result
 end
 
---- Join lines into string
----@param lines table List of lines
----@return string Joined string
-function M.join_lines(lines)
-    return table.concat(lines, "\n")
+--- Join lines into a string with newlines.
+--- @param line_list string[]
+--- @return string
+function M.join_lines(line_list)
+  return table.concat(line_list, "\n")
+end
+
+-- ============================================================================
+-- Path Utilities
+-- ============================================================================
+
+--- Normalize a file path: expand `~`, remove trailing `/`.
+--- @param path string
+--- @return string
+function M.normalize_path(path)
+  -- Expand tilde using vim.fn.expand (available in plenary test env)
+  if path:sub(1, 1) == "~" then
+    path = vim.fn.expand(path)
+  end
+  -- Remove trailing slash (but don't reduce "/" to "")
+  if #path > 1 and path:sub(-1) == "/" then
+    path = path:sub(1, -2)
+  end
+  return path
+end
+
+--- Check if path is under parent directory.
+--- @param path string
+--- @param parent string
+--- @return boolean
+function M.is_subpath(path, parent)
+  local norm_path = M.normalize_path(path)
+  local norm_parent = M.normalize_path(parent)
+  if norm_path == norm_parent then return true end
+  return norm_path:sub(1, #norm_parent + 1) == norm_parent .. "/"
+end
+
+--- Get relative path from base.
+--- @param path string absolute path
+--- @param base string base directory
+--- @return string relative path
+function M.relative_path(path, base)
+  local norm_path = M.normalize_path(path)
+  local norm_base = M.normalize_path(base)
+  if norm_path:sub(1, #norm_base) == norm_base then
+    local rel = norm_path:sub(#norm_base + 1)
+    -- Remove leading slash
+    if rel:sub(1, 1) == "/" then
+      rel = rel:sub(2)
+    end
+    return rel
+  end
+  return norm_path
+end
+
+-- ============================================================================
+-- File I/O
+-- ============================================================================
+
+--- Read entire file contents.
+--- @param path string
+--- @return string|nil content
+--- @return string|nil error
+function M.read_file(path)
+  local f, err = io.open(path, "r")
+  if not f then
+    return nil, err
+  end
+  local content = f:read("*a")
+  f:close()
+  return content
+end
+
+--- Write content to file (creates/overwrites).
+--- @param path string
+--- @param content string
+--- @return boolean success
+--- @return string|nil error
+function M.write_file(path, content)
+  local f, err = io.open(path, "w")
+  if not f then
+    return false, err
+  end
+  f:write(content)
+  f:close()
+  return true
+end
+
+-- ============================================================================
+-- Table Utilities
+-- ============================================================================
+
+--- Deep copy a table.
+--- @param t table
+--- @return table
+function M.deep_copy(t)
+  if type(t) ~= "table" then
+    return t
+  end
+  local copy = {}
+  for k, v in pairs(t) do
+    copy[M.deep_copy(k)] = M.deep_copy(v)
+  end
+  return setmetatable(copy, getmetatable(t))
+end
+
+-- ============================================================================
+-- Time Utilities
+-- ============================================================================
+
+local SECONDS_PER_DAY = 86400
+
+--- Get current unix timestamp.
+--- @return number
+function M.now()
+  return os.time()
+end
+
+--- Format a unix timestamp as a date string (YYYY-MM-DD).
+--- @param ts number unix timestamp
+--- @return string
+function M.format_date(ts)
+  return os.date("%Y-%m-%d", ts)
+end
+
+--- Format a unix timestamp as a datetime string (YYYY-MM-DD HH:MM).
+--- @param ts number unix timestamp
+--- @return string
+function M.format_datetime(ts)
+  return os.date("%Y-%m-%d %H:%M", ts)
+end
+
+--- Format an interval in days as a human-readable string.
+--- @param days number interval in fractional days
+--- @return string
+function M.format_interval(days)
+  local minutes = days * 24 * 60
+  local hours = days * 24
+
+  if minutes < 1 then
+    return "< 1m"
+  end
+
+  -- Show hours if rounded hours >= 1
+  local rounded_hours = math.floor(hours + 0.5)
+  if rounded_hours < 1 then
+    return string.format("%dm", math.floor(minutes + 0.5))
+  end
+
+  if rounded_hours < 24 then
+    return string.format("%dh", rounded_hours)
+  end
+
+  if days < 30 then
+    return string.format("%dd", math.floor(days + 0.5))
+  end
+
+  local months = days / 30
+  if months < 12 then
+    return string.format("%.1fmo", months)
+  end
+
+  local years = days / 365
+  return string.format("%.1fy", years)
+end
+
+--- Calculate days between two unix timestamps.
+--- @param ts1 number
+--- @param ts2 number
+--- @return number fractional days
+function M.days_between(ts1, ts2)
+  return math.abs(ts2 - ts1) / SECONDS_PER_DAY
+end
+
+--- Add days to a unix timestamp.
+--- @param ts number unix timestamp
+--- @param days number fractional days to add
+--- @return number new timestamp
+function M.add_days(ts, days)
+  return ts + (days * SECONDS_PER_DAY)
+end
+
+--- Get the start of day (midnight) for a unix timestamp.
+--- @param ts number unix timestamp
+--- @return number timestamp at midnight
+function M.start_of_day(ts)
+  local date = os.date("*t", ts)
+  date.hour = 0
+  date.min = 0
+  date.sec = 0
+  return os.time(date)
+end
+
+-- ============================================================================
+-- Debounce
+-- ============================================================================
+
+--- Create a debounced version of a function.
+--- @param fn function the function to debounce
+--- @param ms number delay in milliseconds
+--- @return function debounced function
+function M.debounce(fn, ms)
+  local timer = nil
+  return function(...)
+    local args = { ... }
+    if timer then
+      timer:stop()
+      timer:close()
+    end
+    timer = vim.loop.new_timer()
+    timer:start(ms, 0, vim.schedule_wrap(function()
+      timer:stop()
+      timer:close()
+      timer = nil
+      fn(unpack(args))
+    end))
+  end
 end
 
 return M
