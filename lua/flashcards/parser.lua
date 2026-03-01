@@ -16,11 +16,16 @@ local STATE_FENCED_BACK = "FENCED_BACK"
 -- Pattern Helpers
 -- ============================================================================
 
---- Check if a line opens a fenced code block (``` with optional language).
+--- Extract the number of backticks in a code fence line, or nil if not a fence.
+--- Matches lines starting with 3 or more backticks.
 --- @param line string
---- @return boolean
-local function is_code_fence(line)
-  return line:match("^%s*```") ~= nil
+--- @return number|nil backtick_count
+local function code_fence_backticks(line)
+  local ticks = line:match("^%s*(```+)")
+  if ticks then
+    return #ticks
+  end
+  return nil
 end
 
 --- Check if a line is a fenced card opener (:::card or :?:card).
@@ -95,6 +100,24 @@ local function match_scope_close(line, file_path, scan_root)
   return nil
 end
 
+--- Merge multiple tag lists, deduplicating while preserving order.
+--- @vararg string[] tag lists to merge
+--- @return string[]
+local function merge_tags(...)
+  local result = {}
+  local seen = {}
+  for i = 1, select("#", ...) do
+    local tag_list = select(i, ...)
+    for _, t in ipairs(tag_list) do
+      if not seen[t] then
+        seen[t] = true
+        result[#result + 1] = t
+      end
+    end
+  end
+  return result
+end
+
 --- Try to parse a line as an inline card (front ::: back or front :?: back).
 --- Returns card data or nil.
 --- @param line string
@@ -116,7 +139,7 @@ local function try_parse_inline(line, line_num, file_path, scope_tags)
     end
   end
 
-  if not front then
+  if not front or utils.trim(front) == "" then
     return nil
   end
 
@@ -133,14 +156,8 @@ local function try_parse_inline(line, line_num, file_path, scope_tags)
   -- Strip tags from back
   back = utils.strip_tags(back)
 
-  -- Merge scope tags with inline tags (scope first, then inline)
-  local all_tags = {}
-  for _, t in ipairs(scope_tags) do
-    all_tags[#all_tags + 1] = t
-  end
-  for _, t in ipairs(inline_tags) do
-    all_tags[#all_tags + 1] = t
-  end
+  -- Merge scope tags with inline tags (scope first, then inline), deduplicated
+  local all_tags = merge_tags(scope_tags, inline_tags)
 
   return {
     front = utils.trim(front),
@@ -223,8 +240,8 @@ function M.parse(file_path, content, scan_root)
 
   local file_lines = utils.lines(content)
   local state = STATE_NORMAL
-  local code_depth = 0 -- tracks ``` nesting in NORMAL state
-  local fenced_code_depth = 0 -- tracks ``` nesting inside fenced cards
+  local code_fence_ticks = 0 -- backtick count of opening fence in NORMAL state (0 = not in code block)
+  local fenced_code_ticks = 0 -- backtick count of opening fence inside fenced cards (0 = not in code block)
 
   -- Scope tracking
   local scope_stack = {} -- { { tag = "python", line = 5 }, ... }
@@ -247,17 +264,21 @@ function M.parse(file_path, content, scan_root)
   for line_num, line in ipairs(file_lines) do
     if state == STATE_NORMAL then
       -- Check for code fences in normal state
-      if is_code_fence(line) then
-        if code_depth == 0 then
-          code_depth = 1
-        else
-          code_depth = 0
+      local ticks = code_fence_backticks(line)
+      if ticks then
+        if code_fence_ticks == 0 then
+          -- Opening a code block
+          code_fence_ticks = ticks
+        elseif ticks >= code_fence_ticks then
+          -- Closing the code block (needs same or more backticks)
+          code_fence_ticks = 0
         end
+        -- Either way, skip this line
         goto continue
       end
 
       -- If inside a code block, skip everything
-      if code_depth > 0 then
+      if code_fence_ticks > 0 then
         goto continue
       end
 
@@ -312,7 +333,7 @@ function M.parse(file_path, content, scan_root)
           open_line = line_num,
           has_separator = false,
         }
-        fenced_code_depth = 0
+        fenced_code_ticks = 0
         state = STATE_FENCED_FRONT
         goto continue
       end
@@ -328,18 +349,19 @@ function M.parse(file_path, content, scan_root)
 
     elseif state == STATE_FENCED_FRONT then
       -- Track code fences inside fenced card
-      if is_code_fence(line) then
-        if fenced_code_depth == 0 then
-          fenced_code_depth = 1
-        else
-          fenced_code_depth = 0
+      local ticks = code_fence_backticks(line)
+      if ticks then
+        if fenced_code_ticks == 0 then
+          fenced_code_ticks = ticks
+        elseif ticks >= fenced_code_ticks then
+          fenced_code_ticks = 0
         end
         fenced.front_lines[#fenced.front_lines + 1] = line
         goto continue
       end
 
       -- If inside a code block within the fenced card, just accumulate
-      if fenced_code_depth > 0 then
+      if fenced_code_ticks > 0 then
         fenced.front_lines[#fenced.front_lines + 1] = line
         goto continue
       end
@@ -348,7 +370,7 @@ function M.parse(file_path, content, scan_root)
       if is_separator(line) then
         fenced.has_separator = true
         state = STATE_FENCED_BACK
-        fenced_code_depth = 0
+        fenced_code_ticks = 0
         goto continue
       end
 
@@ -360,7 +382,7 @@ function M.parse(file_path, content, scan_root)
           message = "Fenced card missing :-: separator",
         }
         state = STATE_NORMAL
-        fenced_code_depth = 0
+        fenced_code_ticks = 0
         goto continue
       end
 
@@ -369,18 +391,19 @@ function M.parse(file_path, content, scan_root)
 
     elseif state == STATE_FENCED_BACK then
       -- Track code fences inside fenced card
-      if is_code_fence(line) then
-        if fenced_code_depth == 0 then
-          fenced_code_depth = 1
-        else
-          fenced_code_depth = 0
+      local ticks = code_fence_backticks(line)
+      if ticks then
+        if fenced_code_ticks == 0 then
+          fenced_code_ticks = ticks
+        elseif ticks >= fenced_code_ticks then
+          fenced_code_ticks = 0
         end
         fenced.back_lines[#fenced.back_lines + 1] = line
         goto continue
       end
 
       -- If inside a code block within the fenced card, just accumulate
-      if fenced_code_depth > 0 then
+      if fenced_code_ticks > 0 then
         fenced.back_lines[#fenced.back_lines + 1] = line
         goto continue
       end
@@ -391,15 +414,9 @@ function M.parse(file_path, content, scan_root)
         -- Extract tags from close line
         local close_tags = utils.parse_tags(close_rest)
 
-        -- Merge scope tags with close-line tags
+        -- Merge scope tags with close-line tags, deduplicated
         local scope_tags = collect_scope_tags(scope_stack)
-        local all_tags = {}
-        for _, t in ipairs(scope_tags) do
-          all_tags[#all_tags + 1] = t
-        end
-        for _, t in ipairs(close_tags) do
-          all_tags[#all_tags + 1] = t
-        end
+        local all_tags = merge_tags(scope_tags, close_tags)
 
         local card = {
           front = trim_multiline(fenced.front_lines),
@@ -417,7 +434,7 @@ function M.parse(file_path, content, scan_root)
         last_card_end_line = line_num
 
         state = STATE_NORMAL
-        fenced_code_depth = 0
+        fenced_code_ticks = 0
         goto continue
       end
 

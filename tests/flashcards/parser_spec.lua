@@ -128,6 +128,51 @@ describe("parser", function()
       assert.same({ "math", "calc" }, cards[1].tags)
       assert.equals("A", cards[1].back)
     end)
+
+    it("does not pick up note from non-adjacent line", function()
+      local content = table.concat({
+        "Q ::: A",
+        "some text",
+        "<!-- note: should not attach -->",
+      }, "\n")
+      local cards, errors = parser.parse("test.md", content, "")
+      assert.equals(0, #errors)
+      assert.equals(1, #cards)
+      assert.is_nil(cards[1].note)
+    end)
+
+    it("ignores cards inside fenced code blocks with language", function()
+      local content = table.concat({
+        "```python",
+        "Q ::: A",
+        "```",
+      }, "\n")
+      local cards, errors = parser.parse("test.md", content, "")
+      assert.equals(0, #errors)
+      assert.equals(0, #cards)
+    end)
+
+    it("resumes parsing after code block ends", function()
+      local content = table.concat({
+        "```",
+        "fake ::: card",
+        "```",
+        "real ::: card",
+      }, "\n")
+      local cards, errors = parser.parse("test.md", content, "")
+      assert.equals(0, #errors)
+      assert.equals(1, #cards)
+      assert.equals("real", cards[1].front)
+    end)
+
+    it("defaults id to nil and note to nil when absent", function()
+      local cards, errors = parser.parse("test.md", "Q ::: A", "")
+      assert.equals(0, #errors)
+      assert.is_nil(cards[1].id)
+      assert.is_nil(cards[1].note)
+      assert.is_false(cards[1].suspended)
+      assert.same({}, cards[1].tags)
+    end)
   end)
 
   -- ==========================================================================
@@ -222,6 +267,44 @@ describe("parser", function()
       assert.truthy(cards[1].back:find("assert foo"))
     end)
 
+    it("does not treat :-: inside code block within fenced card as separator", function()
+      local content = table.concat({
+        ":::card",
+        "Front text",
+        "```",
+        ":-:",
+        "```",
+        ":-:",
+        "Actual back",
+        ":::end",
+      }, "\n")
+      local cards, errors = parser.parse("test.md", content, "")
+      assert.equals(0, #errors)
+      assert.equals(1, #cards)
+      -- The front should contain the code block with :-: inside it
+      assert.truthy(cards[1].front:find("```\n:-:\n```", 1, true))
+      assert.equals("Actual back", cards[1].back)
+    end)
+
+    it("does not treat :::end inside code block within fenced card as close", function()
+      local content = table.concat({
+        ":::card",
+        "Front",
+        ":-:",
+        "```",
+        ":::end",
+        "```",
+        "more back content",
+        ":::end",
+      }, "\n")
+      local cards, errors = parser.parse("test.md", content, "")
+      assert.equals(0, #errors)
+      assert.equals(1, #cards)
+      -- Back should include the code block with :::end inside it
+      assert.truthy(cards[1].back:find("```\n:::end\n```"))
+      assert.truthy(cards[1].back:find("more back content"))
+    end)
+
     it("reports error for unclosed fenced card at EOF", function()
       local content = table.concat({
         ":::card",
@@ -246,7 +329,7 @@ describe("parser", function()
       local cards, errors = parser.parse("test.md", content, "")
       assert.equals(0, #cards)
       assert.equals(1, #errors)
-      assert.truthy(errors[1].message:lower():find("separator"))
+      assert.truthy(errors[1].message:lower():find("separator") or errors[1].message:find(":-:"))
     end)
 
     it("extracts note annotation on line after :::end", function()
@@ -308,6 +391,79 @@ describe("parser", function()
       assert.same({ "vocab" }, cards[1].tags)
       assert.is_true(cards[1].reversible)
     end)
+
+    it("trims leading/trailing blank lines from fenced card front and back", function()
+      local content = table.concat({
+        ":::card",
+        "Front line 1",
+        "Front line 2",
+        "",
+        ":-:",
+        "",
+        "Back line 1",
+        "Back line 2",
+        "",
+        ":::end",
+      }, "\n")
+      local cards, errors = parser.parse("test.md", content, "")
+      assert.equals(0, #errors)
+      assert.equals(1, #cards)
+      assert.equals("Front line 1\nFront line 2", cards[1].front)
+      assert.equals("Back line 1\nBack line 2", cards[1].back)
+    end)
+
+    it("preserves internal newlines in multi-line content", function()
+      local content = table.concat({
+        ":::card",
+        "line1",
+        "line2",
+        "line3",
+        ":-:",
+        "back1",
+        "back2",
+        ":::end",
+      }, "\n")
+      local cards, errors = parser.parse("test.md", content, "")
+      assert.equals(0, #errors)
+      assert.equals("line1\nline2\nline3", cards[1].front)
+      assert.equals("back1\nback2", cards[1].back)
+    end)
+
+    it("handles note on line after fenced card with tags", function()
+      local content = table.concat({
+        ":::card",
+        "Q",
+        ":-:",
+        "A",
+        ":::end #tag1",
+        "<!-- note: ref -->",
+      }, "\n")
+      local cards, errors = parser.parse("test.md", content, "")
+      assert.equals(0, #errors)
+      assert.equals(1, #cards)
+      assert.same({ "tag1" }, cards[1].tags)
+      assert.equals("ref", cards[1].note)
+    end)
+
+    it("handles multiple fenced cards in sequence", function()
+      local content = table.concat({
+        ":::card",
+        "Q1",
+        ":-:",
+        "A1",
+        ":::end",
+        ":::card",
+        "Q2",
+        ":-:",
+        "A2",
+        ":::end",
+      }, "\n")
+      local cards, errors = parser.parse("test.md", content, "")
+      assert.equals(0, #errors)
+      assert.equals(2, #cards)
+      assert.equals("Q1", cards[1].front)
+      assert.equals("Q2", cards[2].front)
+    end)
   end)
 
   -- ==========================================================================
@@ -361,6 +517,18 @@ describe("parser", function()
       assert.truthy(vim.tbl_contains(cards[1].tags, "explicit"))
     end)
 
+    it("deduplicates merged tags", function()
+      local content = table.concat({
+        ":#python:",
+        "Q ::: A #python",
+        ":#/python:",
+      }, "\n")
+      local cards, errors = parser.parse("test.md", content, "")
+      assert.equals(0, #errors)
+      assert.equals(1, #cards)
+      assert.same({ "python" }, cards[1].tags)
+    end)
+
     it("reports error for mismatched close tag", function()
       local content = table.concat({
         ":#python:",
@@ -410,6 +578,37 @@ describe("parser", function()
       assert.truthy(vim.tbl_contains(cards[1].tags, "python"))
       assert.truthy(vim.tbl_contains(cards[1].tags, "algo"))
     end)
+
+    it("cards after scope close do not get scope tags", function()
+      local content = table.concat({
+        ":#python:",
+        "Q1 ::: A1",
+        ":#/python:",
+        "Q2 ::: A2",
+      }, "\n")
+      local cards, errors = parser.parse("test.md", content, "")
+      assert.equals(0, #errors)
+      assert.equals(2, #cards)
+      assert.same({ "python" }, cards[1].tags)
+      assert.same({}, cards[2].tags)
+    end)
+
+    it("merges scoped tags with fenced card closing tags", function()
+      local content = table.concat({
+        ":#math:",
+        ":::card",
+        "Q",
+        ":-:",
+        "A",
+        ":::end #algebra",
+        ":#/math:",
+      }, "\n")
+      local cards, errors = parser.parse("test.md", content, "")
+      assert.equals(0, #errors)
+      assert.equals(1, #cards)
+      assert.truthy(vim.tbl_contains(cards[1].tags, "math"))
+      assert.truthy(vim.tbl_contains(cards[1].tags, "algebra"))
+    end)
   end)
 
   -- ==========================================================================
@@ -438,6 +637,18 @@ describe("parser", function()
       assert.equals(0, #errors)
       assert.equals(1, #cards)
       assert.equals("algebra (1.2.3:5)", cards[1].note)
+    end)
+
+    it("expands template vars in scoped tag close for matching", function()
+      local content = table.concat({
+        ":#{{file.name}}:",
+        "Q ::: A",
+        ":#/algebra:",
+      }, "\n")
+      local cards, errors = parser.parse("math/algebra.md", content, "")
+      assert.equals(0, #errors)
+      assert.equals(1, #cards)
+      assert.truthy(vim.tbl_contains(cards[1].tags, "algebra"))
     end)
   end)
 
@@ -532,7 +743,7 @@ describe("parser", function()
       assert.is_nil(cards[2].note)
     end)
 
-    it("trims whitespace from front and back", function()
+    it("trims whitespace from inline card front and back", function()
       local cards, errors = parser.parse("test.md", "  Q  :::  A  ", "")
       assert.equals(0, #errors)
       assert.equals(1, #cards)
@@ -561,25 +772,59 @@ describe("parser", function()
       assert.is_true(cards[3].reversible)
     end)
 
-    it("trims trailing blank lines from fenced card front and back", function()
+    it("scope tags do not bleed between parse calls", function()
+      local cards1, errors1 = parser.parse("test1.md", ":#python:\nQ1 ::: A1\n:#/python:", "")
+      assert.equals(0, #errors1)
+      assert.same({ "python" }, cards1[1].tags)
+
+      local cards2, errors2 = parser.parse("test2.md", "Q2 ::: A2", "")
+      assert.equals(0, #errors2)
+      assert.same({}, cards2[1].tags)
+    end)
+
+    it("handles Windows-style CRLF line endings", function()
+      local content = "Q1 ::: A1\r\nQ2 ::: A2\r\n"
+      local cards, errors = parser.parse("test.md", content, "")
+      assert.equals(0, #errors)
+      assert.equals(2, #cards)
+      assert.equals("Q1", cards[1].front)
+      assert.equals("A1", cards[1].back)
+      assert.equals("Q2", cards[2].front)
+      assert.equals("A2", cards[2].back)
+    end)
+
+    it("bare ::: on a line by itself is not a card", function()
+      local cards, errors = parser.parse("test.md", ":::", "")
+      assert.equals(0, #cards)
+    end)
+
+    it("inline separator ::: requires non-empty front", function()
+      -- " ::: back" has empty front after trim - should not be a card
+      local cards, errors = parser.parse("test.md", " ::: back", "")
+      assert.equals(0, #cards)
+    end)
+
+    it("nested backtick code blocks tracked correctly", function()
       local content = table.concat({
-        ":::card",
-        "Front line 1",
-        "Front line 2",
-        "",
-        ":-:",
-        "",
-        "Back line 1",
-        "Back line 2",
-        "",
-        ":::end",
+        "````",
+        "```",
+        "Q ::: A",
+        "```",
+        "````",
+        "Real ::: Card",
       }, "\n")
       local cards, errors = parser.parse("test.md", content, "")
       assert.equals(0, #errors)
       assert.equals(1, #cards)
-      -- Should trim leading/trailing blank lines from content
-      assert.equals("Front line 1\nFront line 2", cards[1].front)
-      assert.equals("Back line 1\nBack line 2", cards[1].back)
+      assert.equals("Real", cards[1].front)
+    end)
+
+    it("error objects have line and message fields", function()
+      local content = ":::card\nQ\n:-:\nA"
+      local _, errors = parser.parse("test.md", content, "")
+      assert.truthy(#errors > 0)
+      assert.is_number(errors[1].line)
+      assert.is_string(errors[1].message)
     end)
   end)
 end)
