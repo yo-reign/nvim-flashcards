@@ -30,6 +30,42 @@ describe("parser", function()
       assert.is_true(cards[1].reversible)
     end)
 
+    it("parses inline card without spaces around :::", function()
+      local cards, errors = parser.parse("test.md", "front:::back", "")
+      assert.equals(0, #errors)
+      assert.equals(1, #cards)
+      assert.equals("front", cards[1].front)
+      assert.equals("back", cards[1].back)
+      assert.is_false(cards[1].reversible)
+    end)
+
+    it("parses reversible card without spaces around :?:", function()
+      local cards, errors = parser.parse("test.md", "term:?:definition", "")
+      assert.equals(0, #errors)
+      assert.equals(1, #cards)
+      assert.equals("term", cards[1].front)
+      assert.equals("definition", cards[1].back)
+      assert.is_true(cards[1].reversible)
+    end)
+
+    it("parses inline card with mixed spacing around :::", function()
+      local cards, errors = parser.parse("test.md", "front::: back", "")
+      assert.equals(0, #errors)
+      assert.equals(1, #cards)
+      assert.equals("front", cards[1].front)
+      assert.equals("back", cards[1].back)
+    end)
+
+    it("parses no-space inline card with tags and ID", function()
+      local cards, errors = parser.parse("test.md", "Q:::A #math <!-- fc:abc12345 -->", "")
+      assert.equals(0, #errors)
+      assert.equals(1, #cards)
+      assert.equals("Q", cards[1].front)
+      assert.equals("A", cards[1].back)
+      assert.equals("abc12345", cards[1].id)
+      assert.same({ "math" }, cards[1].tags)
+    end)
+
     it("extracts tags from inline cards", function()
       local cards, errors = parser.parse("test.md", "Q ::: A #math #algebra/linear", "")
       assert.equals(0, #errors)
@@ -499,7 +535,7 @@ describe("parser", function()
       assert.equals(2, #cards)
       -- Q1 gets both python and decorators
       assert.truthy(vim.tbl_contains(cards[1].tags, "python"))
-      assert.truthy(vim.tbl_contains(cards[1].tags, "decorators"))
+      assert.truthy(vim.tbl_contains(cards[1].tags, "python/decorators"))
       -- Q2 gets only python
       assert.same({ "python" }, cards[2].tags)
     end)
@@ -514,7 +550,7 @@ describe("parser", function()
       assert.equals(0, #errors)
       assert.equals(1, #cards)
       assert.truthy(vim.tbl_contains(cards[1].tags, "python"))
-      assert.truthy(vim.tbl_contains(cards[1].tags, "explicit"))
+      assert.truthy(vim.tbl_contains(cards[1].tags, "python/explicit"))
     end)
 
     it("deduplicates merged tags", function()
@@ -576,7 +612,7 @@ describe("parser", function()
       assert.equals(0, #errors)
       assert.equals(1, #cards)
       assert.truthy(vim.tbl_contains(cards[1].tags, "python"))
-      assert.truthy(vim.tbl_contains(cards[1].tags, "algo"))
+      assert.truthy(vim.tbl_contains(cards[1].tags, "python/algo"))
     end)
 
     it("cards after scope close do not get scope tags", function()
@@ -607,7 +643,136 @@ describe("parser", function()
       assert.equals(0, #errors)
       assert.equals(1, #cards)
       assert.truthy(vim.tbl_contains(cards[1].tags, "math"))
-      assert.truthy(vim.tbl_contains(cards[1].tags, "algebra"))
+      assert.truthy(vim.tbl_contains(cards[1].tags, "math/algebra"))
+    end)
+
+    it("nests inline tags under scope prefix", function()
+      local content = table.concat({
+        ":#c:",
+        "Q ::: A #func",
+        ":#/c:",
+      }, "\n")
+      local cards, errors = parser.parse("test.md", content, "")
+      assert.equals(0, #errors)
+      assert.equals(1, #cards)
+      assert.same({ "c", "c/func" }, cards[1].tags)
+    end)
+
+    it("nests inline tags under deep scope prefix", function()
+      local content = table.concat({
+        ":#c:",
+        ":#networking:",
+        "Q ::: A #sockets",
+        ":#/networking:",
+        ":#/c:",
+      }, "\n")
+      local cards, errors = parser.parse("test.md", content, "")
+      assert.equals(0, #errors)
+      assert.equals(1, #cards)
+      assert.same({ "c", "c/networking", "c/networking/sockets" }, cards[1].tags)
+    end)
+
+    it("builds hierarchical tags from nested scopes", function()
+      local content = table.concat({
+        ":#c:",
+        ":#beej-guide-c:",
+        "Q ::: A",
+        ":#/beej-guide-c:",
+        ":#/c:",
+      }, "\n")
+      local cards, errors = parser.parse("test.md", content, "")
+      assert.equals(0, #errors)
+      assert.equals(1, #cards)
+      assert.same({ "c", "c/beej-guide-c" }, cards[1].tags)
+    end)
+
+    it("drops inline tags that duplicate a raw scope name", function()
+      local content = table.concat({
+        ":#python:",
+        ":#decorators:",
+        "Q ::: A #python #decorators",
+        ":#/decorators:",
+        ":#/python:",
+      }, "\n")
+      local cards, errors = parser.parse("test.md", content, "")
+      assert.equals(0, #errors)
+      assert.equals(1, #cards)
+      -- #python and #decorators match raw scope names, so they're dropped
+      -- only scope-provided tags remain
+      assert.same({ "python", "python/decorators" }, cards[1].tags)
+    end)
+
+    it("drops inline tag matching full hierarchical scope path", function()
+      local content = table.concat({
+        ":#python:",
+        ":#decorators:",
+        "Q ::: A #python/decorators",
+        ":#/decorators:",
+        ":#/python:",
+      }, "\n")
+      local cards, errors = parser.parse("test.md", content, "")
+      assert.equals(0, #errors)
+      assert.equals(1, #cards)
+      -- #python/decorators matches the full scope path, so it's dropped
+      assert.same({ "python", "python/decorators" }, cards[1].tags)
+    end)
+
+    it("nests already-hierarchical inline tag under scope prefix", function()
+      local content = table.concat({
+        ":#c:",
+        "Q ::: A #net/tcp",
+        ":#/c:",
+      }, "\n")
+      local cards, errors = parser.parse("test.md", content, "")
+      assert.equals(0, #errors)
+      assert.equals(1, #cards)
+      assert.same({ "c", "c/net/tcp" }, cards[1].tags)
+    end)
+
+    it("drops only duplicate inline tags and nests the rest", function()
+      local content = table.concat({
+        ":#python:",
+        "Q ::: A #python #typing",
+        ":#/python:",
+      }, "\n")
+      local cards, errors = parser.parse("test.md", content, "")
+      assert.equals(0, #errors)
+      assert.equals(1, #cards)
+      assert.same({ "python", "python/typing" }, cards[1].tags)
+    end)
+
+    it("drops inline tag matching outer scope name in nested scopes", function()
+      local content = table.concat({
+        ":#python:",
+        ":#decorators:",
+        "Q ::: A #python #extra",
+        ":#/decorators:",
+        ":#/python:",
+      }, "\n")
+      local cards, errors = parser.parse("test.md", content, "")
+      assert.equals(0, #errors)
+      assert.equals(1, #cards)
+      -- #python matches outer scope name, dropped
+      -- #extra does not match any scope name, nested under full prefix
+      assert.same({ "python", "python/decorators", "python/decorators/extra" }, cards[1].tags)
+    end)
+
+    it("nests fenced close tags under deep scope prefix", function()
+      local content = table.concat({
+        ":#c:",
+        ":#networking:",
+        ":::card",
+        "Q",
+        ":-:",
+        "A",
+        ":::end #sockets",
+        ":#/networking:",
+        ":#/c:",
+      }, "\n")
+      local cards, errors = parser.parse("test.md", content, "")
+      assert.equals(0, #errors)
+      assert.equals(1, #cards)
+      assert.same({ "c", "c/networking", "c/networking/sockets" }, cards[1].tags)
     end)
   end)
 

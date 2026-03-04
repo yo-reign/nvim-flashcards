@@ -204,7 +204,7 @@ What is a generator? ::: A function that yields values lazily
 :#/python:
 ```
 
-The first card gets both `#python` and `#decorators`. The second card gets only `#python`.
+The first card gets `#python` and `#python/decorators` (nested scopes build hierarchical tags). The second card gets only `#python`. Inline tags are also nested under the current scope — `#extra` inside `:#python:` becomes `#python/extra`.
 
 ## Commands
 

@@ -118,14 +118,68 @@ local function merge_tags(...)
   return result
 end
 
+--- Collect the current scope tags from the scope stack.
+--- Builds hierarchical paths: :#a: + :#b: → ["a", "a/b"]
+--- @param scope_stack table[]
+--- @return string[]
+local function collect_scope_tags(scope_stack)
+  local tags = {}
+  local prefix = ""
+  for _, scope in ipairs(scope_stack) do
+    local full_tag
+    if prefix == "" then
+      full_tag = scope.tag
+    else
+      full_tag = prefix .. "/" .. scope.tag
+    end
+    tags[#tags + 1] = full_tag
+    prefix = full_tag
+  end
+  return tags
+end
+
+--- Nest inline/close-line tags under the current scope prefix.
+--- Tags matching a raw scope name are dropped (redundant with scope tags).
+--- @param scope_stack table[] the current scope stack
+--- @param tags string[] inline or close-line tags
+--- @return string[]
+local function nest_tags_in_scope(scope_stack, tags)
+  if #scope_stack == 0 or #tags == 0 then
+    return tags
+  end
+  -- Build the full prefix and collect names to treat as redundant:
+  -- both raw leaf names ("python", "decorators") and full hierarchical
+  -- paths ("python", "python/decorators") so that inline tags matching
+  -- any scope segment or the full scope path are dropped.
+  local prefix = ""
+  local redundant = {}
+  for _, scope in ipairs(scope_stack) do
+    if prefix == "" then
+      prefix = scope.tag
+    else
+      prefix = prefix .. "/" .. scope.tag
+    end
+    redundant[scope.tag] = true
+    redundant[prefix] = true
+  end
+  -- Prefix non-redundant tags, drop tags that match a scope name or path
+  local result = {}
+  for _, tag in ipairs(tags) do
+    if not redundant[tag] then
+      result[#result + 1] = prefix .. "/" .. tag
+    end
+  end
+  return result
+end
+
 --- Try to parse a line as an inline card (front ::: back or front :?: back).
 --- Returns card data or nil.
 --- @param line string
 --- @param line_num number
 --- @param file_path string
---- @param scope_tags string[]
+--- @param scope_stack table[]
 --- @return table|nil card
-local function try_parse_inline(line, line_num, file_path, scope_tags)
+local function try_parse_inline(line, line_num, file_path, scope_stack)
   -- Try :?: first (reversible), then ::: (normal)
   local front, back, reversible
 
@@ -156,8 +210,10 @@ local function try_parse_inline(line, line_num, file_path, scope_tags)
   -- Strip tags from back
   back = utils.strip_tags(back)
 
-  -- Merge scope tags with inline tags (scope first, then inline), deduplicated
-  local all_tags = merge_tags(scope_tags, inline_tags)
+  -- Nest inline tags under scope prefix, then merge with scope tags
+  local scope_tags = collect_scope_tags(scope_stack)
+  local nested_inline = nest_tags_in_scope(scope_stack, inline_tags)
+  local all_tags = merge_tags(scope_tags, nested_inline)
 
   return {
     front = utils.trim(front),
@@ -200,17 +256,6 @@ local function trim_multiline(line_list)
     trimmed[#trimmed + 1] = line_list[i]
   end
   return table.concat(trimmed, "\n")
-end
-
---- Collect the current scope tags from the scope stack.
---- @param scope_stack table[]
---- @return string[]
-local function collect_scope_tags(scope_stack)
-  local tags = {}
-  for _, scope in ipairs(scope_stack) do
-    tags[#tags + 1] = scope.tag
-  end
-  return tags
 end
 
 -- ============================================================================
@@ -338,8 +383,7 @@ function M.parse(file_path, content, scan_root)
       end
 
       -- Try inline card
-      local scope_tags = collect_scope_tags(scope_stack)
-      local card = try_parse_inline(line, line_num, file_path, scope_tags)
+      local card = try_parse_inline(line, line_num, file_path, scope_stack)
       if card then
         cards[#cards + 1] = card
         last_card_idx = #cards
@@ -410,12 +454,11 @@ function M.parse(file_path, content, scan_root)
       -- Check for fenced close
       local matched, _, close_rest = match_fenced_close(line)
       if matched then
-        -- Extract tags from close line
+        -- Extract tags from close line and nest under scope prefix
         local close_tags = utils.parse_tags(close_rest)
-
-        -- Merge scope tags with close-line tags, deduplicated
         local scope_tags = collect_scope_tags(scope_stack)
-        local all_tags = merge_tags(scope_tags, close_tags)
+        local nested_close = nest_tags_in_scope(scope_stack, close_tags)
+        local all_tags = merge_tags(scope_tags, nested_close)
 
         local card = {
           front = trim_multiline(fenced.front_lines),

@@ -135,7 +135,7 @@ Definition or explanation here
 
 ### Tag Scopes
 
-Use `:#tag:` to apply a tag to all following cards in a file until `:#:` clears it:
+Use `:#tag:` to apply a tag to a block of cards. Close with `:#/tag:`:
 
 ```markdown
 :#python:
@@ -143,21 +143,29 @@ Use `:#tag:` to apply a tag to all following cards in a file until `:#:` clears 
 What is a list? ::: An ordered, mutable collection
 What is a dict? ::: A key-value mapping
 
-:#:
+:#/python:
 ```
 
 Both cards get the `#python` tag without explicit `#python` on each line.
 
-Multiple scopes stack:
+Nested scopes build hierarchical tags:
 
 ```markdown
-:#math:
-:#algebra:
+:#python:
+:#decorators:
 
-Quadratic formula ::: x = (-b ± √(b²-4ac)) / 2a
+What is @property? ::: A decorator that creates a managed attribute
 
-:#:
+:#/decorators:
+
+What is a generator? ::: A function that yields values lazily
+
+:#/python:
 ```
+
+The first card gets `#python` and `#python/decorators`. The second gets only `#python`.
+Inline tags are also nested under the current scope — `#extra` inside `:#python:` becomes `#python/extra`.
+Inline tags that duplicate a scope name (e.g., `#python` inside `:#python:`) are dropped as redundant.
 
 ### Tag Storage
 
@@ -608,7 +616,7 @@ describe("parser", function()
     end)
 
     it("applies scoped tags", function()
-        local content = ":#math:\nQ1 ::: A1\nQ2 ::: A2\n:#:"
+        local content = ":#math:\nQ1 ::: A1\nQ2 ::: A2\n:#/math:"
         local cards = parser.parse_file("test.md", content)
         assert.equals(2, #cards)
         assert.is_true(vim.tbl_contains(cards[1].tags, "math"))
