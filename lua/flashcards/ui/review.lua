@@ -230,7 +230,7 @@ local function render_card()
 
   -- Track when question is shown for elapsed_ms timing
   if not state.showing_answer then
-    state.card_shown_at = os.time()
+    state.card_shown_at = vim.loop.hrtime()
   end
 
   if state.showing_answer then
@@ -283,7 +283,7 @@ local function render_card()
     table.insert(lines, interval_line)
 
     table.insert(lines, "")
-    table.insert(lines, "  (Also: n=Wrong, y=Correct, s=Skip, u=Undo, e=Edit)")
+    table.insert(lines, string.format("  (Also: n=Wrong, y=Correct, %s=Skip, %s=Undo, %s=Edit)", keymaps.skip, keymaps.undo, keymaps.edit))
   else
     -- Prompt to reveal answer
     table.insert(lines, "")
@@ -422,7 +422,7 @@ function M.answer(rating)
 
   local elapsed_ms = 0
   if state.card_shown_at then
-    elapsed_ms = (os.time() - state.card_shown_at) * 1000
+    elapsed_ms = math.floor((vim.loop.hrtime() - state.card_shown_at) / 1e6)
   end
   state.session:answer(rating, elapsed_ms)
 

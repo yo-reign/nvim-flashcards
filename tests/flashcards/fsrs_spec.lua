@@ -139,13 +139,13 @@ describe("fsrs", function()
             assert.equals(1.0, r)
         end)
 
-        it("should return 0.5 after one stability interval", function()
+        it("should return 0.9 after one stability interval", function()
             local fsrs = require("flashcards.fsrs")
             local scheduler = fsrs.new()
 
-            -- After 'stability' days, retrievability should be 0.5 (half-life)
+            -- FSRS definition: after 'stability' days, retrievability = 0.9
             local r = scheduler:retrievability(10, 10)
-            assert.is_true(math.abs(r - 0.5) < 0.01)
+            assert.is_true(math.abs(r - 0.9) < 0.01)
         end)
 
         it("should decrease over time", function()
@@ -175,9 +175,9 @@ describe("fsrs", function()
             local scheduler = fsrs.new({ target_correctness = 0.85 })
 
             local interval = scheduler:next_interval(10)
-            -- For 85% target, interval should be about stability * 0.234
-            assert.is_true(interval >= 1)
-            assert.is_true(interval <= 365)
+            -- For 85% target with power-law, interval ≈ stability * 1.637 ≈ 16
+            assert.is_true(interval >= 14)
+            assert.is_true(interval <= 18)
         end)
 
         it("should increase interval with higher stability", function()

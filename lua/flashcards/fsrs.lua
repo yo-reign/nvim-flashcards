@@ -134,7 +134,14 @@ function FSRS:next_forget_stability(d, s)
     return math.max(w.initial_stability_wrong, new_stability)
 end
 
+-- FSRS power-law forgetting curve constants.
+-- R(t, S) = (1 + FACTOR * t/S)^DECAY
+-- At t=S: R = (1 + 19/81)^(-0.5) = 0.9 (stability = time to drop to 90% retention)
+local FORGETTING_FACTOR = 19 / 81
+local FORGETTING_DECAY = -0.5
+
 --- Calculate retrievability (probability of recall).
+--- Uses FSRS power-law forgetting curve: R(t,S) = (1 + FACTOR*t/S)^DECAY
 --- @param elapsed_days number Days since last review
 --- @param stability number Card stability
 --- @return number Retrievability (0-1)
@@ -142,20 +149,18 @@ function FSRS:retrievability(elapsed_days, stability)
     if stability <= 0 then
         return 0
     end
-    -- Exponential forgetting curve
-    return math.exp(-elapsed_days / stability * math.log(2))
+    return math.pow(1 + FORGETTING_FACTOR * elapsed_days / stability, FORGETTING_DECAY)
 end
 
 --- Calculate interval from stability and target correctness.
+--- Inverts the power-law forgetting curve to find when R drops to target.
 --- @param stability number Card stability
 --- @return number Interval in days
 function FSRS:next_interval(stability)
-    -- Interval where retrievability equals target_correctness
-    -- R = exp(-t/S * ln(2))
-    -- target = exp(-interval/S * ln(2))
-    -- ln(target) = -interval/S * ln(2)
-    -- interval = -S * ln(target) / ln(2)
-    local interval = -stability * math.log(self.target_correctness) / math.log(2)
+    -- R(t, S) = (1 + FACTOR * t/S)^DECAY = target
+    -- (1 + FACTOR * t/S) = target^(1/DECAY)
+    -- t = S * (target^(1/DECAY) - 1) / FACTOR
+    local interval = stability * (math.pow(self.target_correctness, 1 / FORGETTING_DECAY) - 1) / FORGETTING_FACTOR
     return math.min(self.maximum_interval, math.max(1, math.floor(interval + 0.5)))
 end
 
@@ -252,9 +257,11 @@ function FSRS:schedule(card_state, rating, now)
             local max_steps = #self.weights.learning_steps
 
             if next_step >= max_steps then
-                -- Graduated to review
+                -- Graduated to review — use correct initial stability as base, not
+                -- the learning-phase stability (which may be 0.5d from a wrong first rating)
+                local grad_stability = math.max(stability, self:init_stability(M.Rating.Correct))
                 new_state.status = M.State.Review
-                new_state.stability = self:next_recall_stability(difficulty, stability, r)
+                new_state.stability = self:next_recall_stability(difficulty, grad_stability, r)
                 new_state.difficulty = self:next_difficulty(difficulty, rating)
                 new_state.learning_step = 0
                 new_state.lapses = lapses

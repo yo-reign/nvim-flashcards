@@ -225,8 +225,10 @@ function Session:answer(rating, elapsed_ms)
   local final_status = new_state.status
   if (final_status == "learning" or final_status == "relearning")
     and intervals.days <= REQUEUE_THRESHOLD_DAYS then
-    -- Insert after current position (not at the very end)
-    local insert_pos = math.min(self.current_idx + 2, #self.queue + 1)
+    -- Space re-queued cards out like Anki: at least a few cards before seeing again
+    local remaining = #self.queue - self.current_idx
+    local spacing = math.max(2, math.min(8, math.floor(remaining * 0.5)))
+    local insert_pos = math.min(self.current_idx + spacing + 1, #self.queue + 1)
     table.insert(self.queue, insert_pos, card)
   end
 end
@@ -255,8 +257,10 @@ function Session:undo()
 
   -- Restore queue position: put the card back at the position it was answered from
   -- First, remove any re-queued copies of this card that were added by the answer
+  -- Search from queue_position + 1 (not current_idx + 1) to catch copies inserted
+  -- between the answered position and the current position after next_card()
   local card_id = last_review.card.id
-  local i = self.current_idx + 1
+  local i = last_review.queue_position + 1
   while i <= #self.queue do
     if self.queue[i].id == card_id then
       table.remove(self.queue, i)
