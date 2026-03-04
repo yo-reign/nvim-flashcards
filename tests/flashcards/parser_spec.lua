@@ -774,6 +774,78 @@ describe("parser", function()
       assert.equals(1, #cards)
       assert.same({ "c", "c/networking", "c/networking/sockets" }, cards[1].tags)
     end)
+
+    it("decomposes compound scope tag into parent segments", function()
+      local content = table.concat({
+        ":#c/networking:",
+        "Q ::: A",
+        ":#/c/networking:",
+      }, "\n")
+      local cards, errors = parser.parse("test.md", content, "")
+      assert.equals(0, #errors)
+      assert.equals(1, #cards)
+      assert.same({ "c", "c/networking" }, cards[1].tags)
+    end)
+
+    it("nests inline tags under compound scope prefix", function()
+      local content = table.concat({
+        ":#c/networking:",
+        "Q ::: A #sockets",
+        ":#/c/networking:",
+      }, "\n")
+      local cards, errors = parser.parse("test.md", content, "")
+      assert.equals(0, #errors)
+      assert.equals(1, #cards)
+      assert.same({ "c", "c/networking", "c/networking/sockets" }, cards[1].tags)
+    end)
+
+    it("drops inline tags redundant with compound scope parent segments", function()
+      local content = table.concat({
+        ":#c/networking:",
+        "Q ::: A #c #networking",
+        ":#/c/networking:",
+      }, "\n")
+      local cards, errors = parser.parse("test.md", content, "")
+      assert.equals(0, #errors)
+      assert.equals(1, #cards)
+      -- #c and #networking are both parent segments, dropped as redundant
+      assert.same({ "c", "c/networking" }, cards[1].tags)
+    end)
+
+    it("decomposes compound scope nested under simple scope", function()
+      local content = table.concat({
+        ":#a:",
+        ":#b/c:",
+        "Q ::: A",
+        ":#/b/c:",
+        ":#/a:",
+      }, "\n")
+      local cards, errors = parser.parse("test.md", content, "")
+      assert.equals(0, #errors)
+      assert.equals(1, #cards)
+      assert.same({ "a", "a/b", "a/b/c" }, cards[1].tags)
+    end)
+
+    it("compound and nested scopes produce equivalent tags", function()
+      -- :#c/networking: should produce the same tags as :#c: + :#networking:
+      local compound = table.concat({
+        ":#c/networking:",
+        "Q ::: A #sockets",
+        ":#/c/networking:",
+      }, "\n")
+      local nested = table.concat({
+        ":#c:",
+        ":#networking:",
+        "Q ::: A #sockets",
+        ":#/networking:",
+        ":#/c:",
+      }, "\n")
+      local cards_c, errors_c = parser.parse("test.md", compound, "")
+      local cards_n, errors_n = parser.parse("test.md", nested, "")
+      assert.equals(0, #errors_c)
+      assert.equals(0, #errors_n)
+      assert.same(cards_c[1].tags, cards_n[1].tags)
+    end)
   end)
 
   -- ==========================================================================
@@ -790,6 +862,8 @@ describe("parser", function()
       local cards, errors = parser.parse("math/algebra.md", content, "")
       assert.equals(0, #errors)
       assert.equals(1, #cards)
+      -- Compound expanded tag decomposes into parent segments
+      assert.truthy(vim.tbl_contains(cards[1].tags, "math"))
       assert.truthy(vim.tbl_contains(cards[1].tags, "math/algebra"))
     end)
 

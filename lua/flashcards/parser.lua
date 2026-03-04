@@ -118,12 +118,32 @@ local function merge_tags(...)
   return result
 end
 
+--- Decompose a potentially compound tag into all parent prefixes.
+--- Given "a/b/c", returns {"a", "a/b", "a/b/c"}.
+--- Given "a", returns {"a"}.
+--- @param tag string
+--- @return string[]
+local function decompose_tag_parents(tag)
+  local parts = {}
+  for segment in tag:gmatch("[^/]+") do
+    if #parts == 0 then
+      parts[1] = segment
+    else
+      parts[#parts + 1] = parts[#parts] .. "/" .. segment
+    end
+  end
+  return parts
+end
+
 --- Collect the current scope tags from the scope stack.
 --- Builds hierarchical paths: :#a: + :#b: → ["a", "a/b"]
+--- Compound scope tags (e.g., :#c/networking:) are decomposed so that
+--- parent segments are also emitted: :#c/networking: → ["c", "c/networking"]
 --- @param scope_stack table[]
 --- @return string[]
 local function collect_scope_tags(scope_stack)
   local tags = {}
+  local seen = {}
   local prefix = ""
   for _, scope in ipairs(scope_stack) do
     local full_tag
@@ -132,14 +152,20 @@ local function collect_scope_tags(scope_stack)
     else
       full_tag = prefix .. "/" .. scope.tag
     end
-    tags[#tags + 1] = full_tag
+    -- Decompose to emit parent segments (handles compound tags with "/")
+    for _, parent in ipairs(decompose_tag_parents(full_tag)) do
+      if not seen[parent] then
+        seen[parent] = true
+        tags[#tags + 1] = parent
+      end
+    end
     prefix = full_tag
   end
   return tags
 end
 
 --- Nest inline/close-line tags under the current scope prefix.
---- Tags matching a raw scope name are dropped (redundant with scope tags).
+--- Tags matching any scope segment, parent prefix, or full path are dropped.
 --- @param scope_stack table[] the current scope stack
 --- @param tags string[] inline or close-line tags
 --- @return string[]
@@ -147,10 +173,8 @@ local function nest_tags_in_scope(scope_stack, tags)
   if #scope_stack == 0 or #tags == 0 then
     return tags
   end
-  -- Build the full prefix and collect names to treat as redundant:
-  -- both raw leaf names ("python", "decorators") and full hierarchical
-  -- paths ("python", "python/decorators") so that inline tags matching
-  -- any scope segment or the full scope path are dropped.
+  -- Build the full prefix and collect all names/paths to treat as redundant,
+  -- including parent segments of compound scope tags.
   local prefix = ""
   local redundant = {}
   for _, scope in ipairs(scope_stack) do
@@ -159,8 +183,14 @@ local function nest_tags_in_scope(scope_stack, tags)
     else
       prefix = prefix .. "/" .. scope.tag
     end
-    redundant[scope.tag] = true
-    redundant[prefix] = true
+    -- Add raw segment names (e.g., "c" and "networking" from "c/networking")
+    for segment in scope.tag:gmatch("[^/]+") do
+      redundant[segment] = true
+    end
+    -- Add all parent prefixes of the accumulated path
+    for _, parent in ipairs(decompose_tag_parents(prefix)) do
+      redundant[parent] = true
+    end
   end
   -- Prefix non-redundant tags, drop tags that match a scope name or path
   local result = {}
