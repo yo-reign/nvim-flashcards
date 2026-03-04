@@ -646,6 +646,133 @@ describe("storage", function()
       assert.equals(1, tags[1].count)
     end)
 
+    it("includes due_count for new cards", function()
+      store:upsert_card({
+        id = "c1",
+        file_path = "test.md",
+        line = 1,
+        front = "Q1",
+        back = "A1",
+        tags = { "math" },
+      })
+      store:upsert_card({
+        id = "c2",
+        file_path = "test.md",
+        line = 2,
+        front = "Q2",
+        back = "A2",
+        tags = { "math" },
+      })
+
+      local tags = store:get_all_tags()
+      assert.equals(1, #tags)
+      assert.equals("math", tags[1].tag)
+      assert.equals(2, tags[1].count)
+      -- New cards are always due
+      assert.equals(2, tags[1].due_count)
+    end)
+
+    it("includes due_count for past-due reviewed cards", function()
+      local now = os.time()
+      store:upsert_card({
+        id = "c1",
+        file_path = "test.md",
+        line = 1,
+        front = "Q1",
+        back = "A1",
+        tags = { "math" },
+      })
+      store:upsert_card({
+        id = "c2",
+        file_path = "test.md",
+        line = 2,
+        front = "Q2",
+        back = "A2",
+        tags = { "math" },
+      })
+
+      -- c1: reviewed, due in the past (due)
+      store:update_card_state("c1", {
+        status = "review",
+        due_date = now - 3600,
+      })
+      -- c2: reviewed, due in the future (not due)
+      store:update_card_state("c2", {
+        status = "review",
+        due_date = now + 86400,
+      })
+
+      local tags = store:get_all_tags()
+      assert.equals(1, #tags)
+      assert.equals(2, tags[1].count)
+      assert.equals(1, tags[1].due_count)
+    end)
+
+    it("returns due_count of 0 when no cards are due", function()
+      local now = os.time()
+      store:upsert_card({
+        id = "c1",
+        file_path = "test.md",
+        line = 1,
+        front = "Q1",
+        back = "A1",
+        tags = { "python" },
+      })
+
+      -- Set card as reviewed with future due date
+      store:update_card_state("c1", {
+        status = "review",
+        due_date = now + 86400,
+      })
+
+      local tags = store:get_all_tags()
+      assert.equals(1, #tags)
+      assert.equals(1, tags[1].count)
+      assert.equals(0, tags[1].due_count)
+    end)
+
+    it("counts due cards per tag correctly across multiple tags", function()
+      local now = os.time()
+      store:upsert_card({
+        id = "c1",
+        file_path = "test.md",
+        line = 1,
+        front = "Q1",
+        back = "A1",
+        tags = { "math", "algebra" },
+      })
+      store:upsert_card({
+        id = "c2",
+        file_path = "test.md",
+        line = 2,
+        front = "Q2",
+        back = "A2",
+        tags = { "math" },
+      })
+
+      -- c1: past due
+      store:update_card_state("c1", {
+        status = "review",
+        due_date = now - 3600,
+      })
+      -- c2: future due
+      store:update_card_state("c2", {
+        status = "review",
+        due_date = now + 86400,
+      })
+
+      local tags = store:get_all_tags()
+      local tag_map = {}
+      for _, t in ipairs(tags) do
+        tag_map[t.tag] = t
+      end
+
+      assert.equals(2, tag_map["math"].count)
+      assert.equals(1, tag_map["math"].due_count)
+      assert.equals(1, tag_map["algebra"].count)
+      assert.equals(1, tag_map["algebra"].due_count)
+    end)
+
     it("filters by exact tag", function()
       store:upsert_card({
         id = "c1",

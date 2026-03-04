@@ -350,20 +350,28 @@ end
 -- Tags
 -- ============================================================================
 
---- Get all tags with their card counts. Only counts active, non-suspended cards.
---- @return table[] list of { tag=string, count=number }
+--- Get all tags with their card counts and due counts. Only counts active, non-suspended cards.
+--- @return table[] list of { tag=string, count=number, due_count=number }
 function JsonStore:get_all_tags()
+  local now = utils.now()
   local counts = {}
+  local due_counts = {}
   for _, entry in pairs(self.data.cards) do
     if entry.active and not entry.suspended then
+      local state = entry.state
+      local is_due = state.status == "new"
+        or (state.due_date and state.due_date <= now)
       for _, tag in ipairs(entry.tags or {}) do
         counts[tag] = (counts[tag] or 0) + 1
+        if is_due then
+          due_counts[tag] = (due_counts[tag] or 0) + 1
+        end
       end
     end
   end
   local result = {}
   for tag, count in pairs(counts) do
-    result[#result + 1] = { tag = tag, count = count }
+    result[#result + 1] = { tag = tag, count = count, due_count = due_counts[tag] or 0 }
   end
   table.sort(result, function(a, b) return a.tag < b.tag end)
   return result

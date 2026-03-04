@@ -93,7 +93,12 @@ function M.render_stats(store)
     table.insert(lines, "# Cards by Tag")
     table.insert(lines, "")
     for _, item in ipairs(tag_list) do
-      table.insert(lines, string.format("  #%s: %d", item.tag, item.count))
+      local due = item.due_count or 0
+      if due > 0 then
+        table.insert(lines, string.format("  #%s: %d (%d due)", item.tag, item.count, due))
+      else
+        table.insert(lines, string.format("  #%s: %d", item.tag, item.count))
+      end
     end
     table.insert(lines, "")
   end

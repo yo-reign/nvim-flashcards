@@ -332,7 +332,13 @@ function M.tags(store, opts)
     finder = finders.new_table({
       results = all_tags,
       entry_maker = function(tag_entry)
-        local display = string.format("#%s (%d cards)", tag_entry.tag, tag_entry.count)
+        local due = tag_entry.due_count or 0
+        local display
+        if due > 0 then
+          display = string.format("#%s (%d cards, %d due)", tag_entry.tag, tag_entry.count, due)
+        else
+          display = string.format("#%s (%d cards)", tag_entry.tag, tag_entry.count)
+        end
         return {
           value = tag_entry,
           display = display,
