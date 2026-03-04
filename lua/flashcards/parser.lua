@@ -129,11 +129,11 @@ local function try_parse_inline(line, line_num, file_path, scope_tags)
   -- Try :?: first (reversible), then ::: (normal)
   local front, back, reversible
 
-  local f, b = line:match("^(.-)%s+:%?:%s+(.+)$")
+  local f, b = line:match("^(.-)%s*:%?:%s*(.+)$")
   if f and b then
     front, back, reversible = f, b, true
   else
-    f, b = line:match("^(.-)%s+:::%s+(.+)$")
+    f, b = line:match("^(.-)%s*:::%s*(.+)$")
     if f and b then
       front, back, reversible = f, b, false
     end
