@@ -82,11 +82,30 @@ describe("utils", function()
     it("returns empty for no tags", function()
       assert.same({}, utils.parse_tags("no tags here"))
     end)
+
+    it("ignores # inside inline code spans", function()
+      local tags = utils.parse_tags("uses `#define FOO 1` for macros #c")
+      assert.same({ "c" }, tags)
+    end)
+
+    it("ignores multiple code spans with #", function()
+      local tags = utils.parse_tags("`#include <stdio.h>` and `#pragma once` #c/preprocessor")
+      assert.same({ "c/preprocessor" }, tags)
+    end)
   end)
 
   describe("strip_tags", function()
     it("removes tags from text", function()
       assert.equals("some text", utils.strip_tags("some text #math #algebra"))
+    end)
+
+    it("preserves inline code containing #", function()
+      assert.equals("uses `#define FOO 1` for macros", utils.strip_tags("uses `#define FOO 1` for macros #c"))
+    end)
+
+    it("preserves multiple code spans with #", function()
+      assert.equals("`#include <stdio.h>` and `#pragma once`",
+        utils.strip_tags("`#include <stdio.h>` and `#pragma once` #c"))
     end)
   end)
 

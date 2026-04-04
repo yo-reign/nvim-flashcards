@@ -114,21 +114,38 @@ end
 -- ============================================================================
 
 --- Parse tags from text. Tags are `#word` patterns where word can include `/`.
+--- Inline code spans (`...`) are ignored to avoid false positives like `#define`.
 --- @param text string
 --- @return string[] tags without the `#` prefix
 function M.parse_tags(text)
+  -- Strip inline code spans before matching to avoid #define, #include, etc.
+  local clean = text:gsub("`[^`]*`", "")
   local tags = {}
-  for tag in text:gmatch("#([%w_/%-]+)") do
+  for tag in clean:gmatch("#([%w_/%-]+)") do
     tags[#tags + 1] = tag
   end
   return tags
 end
 
 --- Remove all `#tag` patterns from text and trim trailing whitespace.
+--- Inline code spans (`...`) are preserved.
 --- @param text string
 --- @return string
 function M.strip_tags(text)
-  local result = text:gsub("%s*#[%w_/%-]+", "")
+  -- Protect inline code spans with placeholders
+  local spans = {}
+  local n = 0
+  local protected = text:gsub("`[^`]*`", function(match)
+    n = n + 1
+    spans[n] = match
+    return "@@CODESPAN" .. n .. "@@"
+  end)
+  -- Strip tags from non-code text
+  protected = protected:gsub("%s*#[%w_/%-]+", "")
+  -- Restore code spans
+  local result = protected:gsub("@@CODESPAN(%d+)@@", function(idx)
+    return spans[tonumber(idx)]
+  end)
   return M.trim(result)
 end
 

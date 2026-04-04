@@ -267,6 +267,16 @@ local function render_card()
 
     local intervals = state.session:preview_intervals()
 
+    -- Format interval with due date for intervals >= 1 day
+    local function fmt_interval(info)
+      if not info then return "?" end
+      if info.days >= 1 then
+        local due_ts = utils.add_days(utils.now(), info.days)
+        return info.formatted .. " (" .. os.date("%b %d", due_ts) .. ")"
+      end
+      return info.formatted
+    end
+
     local rating_line = string.format(
       "  [%s] Wrong    [%s] Correct      [%s] Quit",
       keymaps.wrong,
@@ -276,9 +286,9 @@ local function render_card()
     table.insert(lines, rating_line)
 
     local interval_line = string.format(
-      "   <%s          <%s",
-      intervals and intervals[1] and intervals[1].formatted or "?",
-      intervals and intervals[2] and intervals[2].formatted or "?"
+      "   %-20s%s",
+      fmt_interval(intervals and intervals[1]),
+      fmt_interval(intervals and intervals[2])
     )
     table.insert(lines, interval_line)
 

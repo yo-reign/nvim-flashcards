@@ -75,6 +75,15 @@ describe("parser", function()
       assert.equals("A", cards[1].back)
     end)
 
+    it("does not treat #define in backticks as a tag", function()
+      local cards, errors = parser.parse("test.md", "What is #define? ::: Preprocessor directive, e.g. `#define FOO 1` #c", "")
+      assert.equals(0, #errors)
+      assert.equals(1, #cards)
+      assert.same({ "c" }, cards[1].tags)
+      -- #define inside backticks should be preserved in back text
+      assert.truthy(cards[1].back:find("#define", 1, true))
+    end)
+
     it("extracts card ID from <!-- fc:id --> comment", function()
       local cards, errors = parser.parse("test.md", "Q ::: A <!-- fc:abc12345 -->", "")
       assert.equals(0, #errors)
