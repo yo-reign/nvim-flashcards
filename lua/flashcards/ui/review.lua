@@ -129,6 +129,26 @@ local function apply_highlights(bufnr, lines)
       tag_start, tag_end = line:find("#[%w_/%-]+", search_start)
     end
   end
+
+  -- Button box highlights
+  if state.button_hl then
+    local bh = state.button_hl
+    local byte_keys = { "top", "mid", "bot", "bottom" }
+    for row = 0, 3 do
+      local ln = bh.line_start + row
+      local bk = byte_keys[row + 1]
+      local col = bh.pad
+      -- Wrong button
+      vim.api.nvim_buf_add_highlight(bufnr, ns, "FlashcardWrong", ln, col, col + bh.wrong_bytes[bk])
+      col = col + bh.wrong_bytes[bk] + bh.gap
+      -- Correct button
+      vim.api.nvim_buf_add_highlight(bufnr, ns, "FlashcardCorrect", ln, col, col + bh.correct_bytes[bk])
+      col = col + bh.correct_bytes[bk] + bh.gap
+      -- Quit button
+      vim.api.nvim_buf_add_highlight(bufnr, ns, "Comment", ln, col, col + bh.quit_bytes[bk])
+    end
+    state.button_hl = nil
+  end
 end
 
 -- ============================================================================
@@ -263,7 +283,6 @@ local function render_card()
 
     -- Rating buttons with interval previews
     table.insert(lines, "")
-    table.insert(lines, "")
 
     local intervals = state.session:preview_intervals()
 
@@ -277,20 +296,41 @@ local function render_card()
       return info.formatted
     end
 
-    local rating_line = string.format(
-      "  [%s] Wrong    [%s] Correct      [%s] Quit",
-      keymaps.wrong,
-      keymaps.correct,
-      keymaps.quit
-    )
-    table.insert(lines, rating_line)
+    -- Build box buttons for each rating option
+    local function make_button(key, label, interval_str)
+      local title = key .. " " .. label
+      local width = math.max(#title, #interval_str) + 2  -- 1 padding each side
+      local top    = "\u{256d}" .. string.rep("\u{2500}", width) .. "\u{256e}"
+      local mid    = "\u{2502}" .. " " .. title   .. string.rep(" ", width - 1 - #title)   .. "\u{2502}"
+      local bot_ln = "\u{2502}" .. " " .. interval_str .. string.rep(" ", width - 1 - #interval_str) .. "\u{2502}"
+      local bottom = "\u{2570}" .. string.rep("\u{2500}", width) .. "\u{256f}"
+      return { top = top, mid = mid, bot_ln = bot_ln, bottom = bottom, width = width }
+    end
 
-    local interval_line = string.format(
-      "   %-20s%s",
-      fmt_interval(intervals and intervals[1]),
-      fmt_interval(intervals and intervals[2])
-    )
-    table.insert(lines, interval_line)
+    local wrong_interval = fmt_interval(intervals and intervals[1])
+    local correct_interval = fmt_interval(intervals and intervals[2])
+
+    local btn_wrong   = make_button(keymaps.wrong, "Wrong", wrong_interval)
+    local btn_correct = make_button(keymaps.correct, "Correct", correct_interval)
+    local btn_quit    = make_button(keymaps.quit, "Quit", "")
+
+    local gap = "  "
+    local pad = "  "
+    local btn_line_start = #lines  -- 0-indexed line of first button row
+    table.insert(lines, pad .. btn_wrong.top    .. gap .. btn_correct.top    .. gap .. btn_quit.top)
+    table.insert(lines, pad .. btn_wrong.mid    .. gap .. btn_correct.mid    .. gap .. btn_quit.mid)
+    table.insert(lines, pad .. btn_wrong.bot_ln .. gap .. btn_correct.bot_ln .. gap .. btn_quit.bot_ln)
+    table.insert(lines, pad .. btn_wrong.bottom .. gap .. btn_correct.bottom .. gap .. btn_quit.bottom)
+
+    -- Store button layout for highlighting
+    state.button_hl = {
+      line_start = btn_line_start,
+      pad = #pad,
+      gap = #gap,
+      wrong_bytes  = { top = #btn_wrong.top, mid = #btn_wrong.mid, bot = #btn_wrong.bot_ln, bottom = #btn_wrong.bottom },
+      correct_bytes = { top = #btn_correct.top, mid = #btn_correct.mid, bot = #btn_correct.bot_ln, bottom = #btn_correct.bottom },
+      quit_bytes = { top = #btn_quit.top, mid = #btn_quit.mid, bot = #btn_quit.bot_ln, bottom = #btn_quit.bottom },
+    }
 
     table.insert(lines, "")
     table.insert(lines, string.format("  (Also: n=Wrong, y=Correct, %s=Skip, %s=Undo, %s=Edit)", keymaps.skip, keymaps.undo, keymaps.edit))
