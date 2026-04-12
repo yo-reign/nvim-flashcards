@@ -19,6 +19,8 @@ describe("config", function()
       assert.equals(0.7, config.options.ui.width)
       assert.equals(0.6, config.options.ui.height)
       assert.equals("rounded", config.options.ui.border)
+      assert.equals(0, config.options.ui.conceallevel)
+      assert.equals("", config.options.ui.concealcursor)
       assert.is_true(config.options.auto_sync)
     end)
 

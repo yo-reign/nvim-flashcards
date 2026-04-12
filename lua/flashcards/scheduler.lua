@@ -4,6 +4,7 @@
 --- @module flashcards.scheduler
 local M = {}
 
+local fsrs = require("flashcards.fsrs")
 local utils = require("flashcards.utils")
 
 -- ============================================================================
@@ -22,6 +23,41 @@ local utils = require("flashcards.utils")
 --- @field new_cards_limit number max new cards per session
 local Session = {}
 Session.__index = Session
+
+local function default_card_state()
+  return {
+    status = "new",
+    stability = 0,
+    difficulty = 0,
+    reps = 0,
+    lapses = 0,
+    learning_step = 0,
+    elapsed_days = 0,
+    scheduled_days = 0,
+  }
+end
+
+local function compare_cards(a, b)
+  local a_due = (a.state and a.state.due_date) or 0
+  local b_due = (b.state and b.state.due_date) or 0
+  if a_due ~= b_due then
+    return a_due < b_due
+  end
+
+  local a_file = a.file_path or ""
+  local b_file = b.file_path or ""
+  if a_file ~= b_file then
+    return a_file < b_file
+  end
+
+  local a_line = a.line or 0
+  local b_line = b.line or 0
+  if a_line ~= b_line then
+    return a_line < b_line
+  end
+
+  return (a.id or "") < (b.id or "")
+end
 
 -- ============================================================================
 -- Constructor
@@ -88,12 +124,11 @@ function Session:load_cards()
   -- Build queue
   self.queue = {}
 
-  -- Learning cards sorted by due_date (earliest first)
-  table.sort(learning, function(a, b)
-    local a_due = (a.state and a.state.due_date) or 0
-    local b_due = (b.state and b.state.due_date) or 0
-    return a_due < b_due
-  end)
+  -- Stable ordering within each bucket
+  table.sort(learning, compare_cards)
+  table.sort(review, compare_cards)
+  table.sort(new, compare_cards)
+
   for _, card in ipairs(learning) do
     table.insert(self.queue, card)
   end
@@ -168,7 +203,7 @@ local REQUEUE_THRESHOLD_DAYS = 30 / (24 * 60) -- 30 minutes in days
 --- Answer the current card with a rating.
 --- Schedules via FSRS, records review in session and store, updates card state,
 --- and re-queues if the card is still in learning/relearning with a short interval.
---- @param rating number 1 (Wrong) or 2 (Correct)
+--- @param rating number 0 (Wrong/false) or 1 (Correct/true)
 --- @param elapsed_ms number|nil time spent on this card in milliseconds
 function Session:answer(rating, elapsed_ms)
   if self.current_idx < 1 or self.current_idx > #self.queue then
@@ -185,7 +220,7 @@ function Session:answer(rating, elapsed_ms)
   -- Get current state from store (with fallback for deleted cards)
   local state_before = self.store:get_card_state(card.id)
   if not state_before then
-    state_before = { status = "new", stability = 0, difficulty = 0, reps = 0, lapses = 0, learning_step = 0 }
+    state_before = default_card_state()
   end
   local status_before = state_before.status
 
@@ -291,14 +326,22 @@ function Session:skip()
     return
   end
 
-  local card = table.remove(self.queue, self.current_idx)
+  if #self.queue <= 1 then
+    return
+  end
+
+  local removed_idx = self.current_idx
+  local card = table.remove(self.queue, removed_idx)
+  local wrapped = removed_idx > #self.queue
   table.insert(self.queue, card)
 
-  -- After removal, current_idx points to the next card (queue shifted).
-  -- But if we removed the last card, current_idx now exceeds #queue.
-  -- Clamp to avoid returning nil from current_card().
-  if self.current_idx > #self.queue then
-    self.current_idx = #self.queue
+  -- After removal, current_idx points to next card in shifted queue.
+  -- If we skipped last card, wrap to first remaining card instead of showing
+  -- skipped card again immediately.
+  if wrapped then
+    self.current_idx = 1
+  else
+    self.current_idx = removed_idx
   end
 end
 
@@ -320,7 +363,7 @@ function Session:preview_intervals()
 
   local state = self.store:get_card_state(card.id)
   if not state then
-    return nil
+    state = default_card_state()
   end
   return self.fsrs:preview_intervals(state, utils.now())
 end
@@ -339,7 +382,7 @@ function Session:summary()
   local new_seen = 0
 
   for _, rev in ipairs(self.reviews) do
-    if rev.rating == 2 then
+    if rev.rating == fsrs.Rating.Correct then
       correct = correct + 1
     else
       wrong = wrong + 1

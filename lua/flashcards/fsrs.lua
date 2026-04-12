@@ -9,8 +9,8 @@ local utils = require("flashcards.utils")
 
 --- Binary rating enum.
 M.Rating = {
-    Wrong = 1, -- Failed to recall
-    Correct = 2, -- Successfully recalled
+    Wrong = 0, -- Failed to recall / false
+    Correct = 1, -- Successfully recalled / true
 }
 
 --- Card state enum.
@@ -67,7 +67,7 @@ function M.new(opts)
 end
 
 --- Calculate initial stability based on rating.
---- @param rating integer Rating (1=Wrong, 2=Correct)
+--- @param rating integer Rating (0=Wrong, 1=Correct)
 --- @return number Initial stability in days
 function FSRS:init_stability(rating)
     local w = self.weights
@@ -86,7 +86,7 @@ end
 
 --- Calculate next difficulty after review.
 --- @param d number Current difficulty
---- @param rating integer Rating (1=Wrong, 2=Correct)
+--- @param rating integer Rating (0=Wrong, 1=Correct)
 --- @return number New difficulty (clamped 1-10)
 function FSRS:next_difficulty(d, rating)
     local w = self.weights
@@ -198,7 +198,7 @@ end
 
 --- Schedule next review for a card.
 --- @param card_state table Current card state
---- @param rating integer Rating (1=Wrong, 2=Correct)
+--- @param rating integer Rating (0=Wrong, 1=Correct)
 --- @param now integer|nil Current timestamp
 --- @return table new_state New card state
 --- @return table intervals Scheduling info with days and formatted fields
@@ -331,7 +331,7 @@ end
 function FSRS:preview_intervals(card_state, now)
     local previews = {}
 
-    for rating = 1, 2 do
+    for rating = M.Rating.Wrong, M.Rating.Correct do
         local _, intervals = self:schedule(card_state, rating, now)
         previews[rating] = intervals
     end
@@ -340,10 +340,13 @@ function FSRS:preview_intervals(card_state, now)
 end
 
 --- Get rating name.
---- @param rating integer Rating (1-2)
+--- @param rating integer Rating (0-1)
 --- @return string Rating name
 function M.rating_name(rating)
-    local names = { "Wrong", "Correct" }
+    local names = {
+        [M.Rating.Wrong] = "Wrong",
+        [M.Rating.Correct] = "Correct",
+    }
     return names[rating] or "Unknown"
 end
 

@@ -28,8 +28,8 @@ describe("fsrs", function()
     describe("Rating", function()
         it("should have binary ratings", function()
             local fsrs = require("flashcards.fsrs")
-            assert.equals(1, fsrs.Rating.Wrong)
-            assert.equals(2, fsrs.Rating.Correct)
+            assert.equals(0, fsrs.Rating.Wrong)
+            assert.equals(1, fsrs.Rating.Correct)
         end)
     end)
 
@@ -383,12 +383,12 @@ describe("fsrs", function()
 
             local previews = scheduler:preview_intervals(card_state)
 
-            assert.is_not_nil(previews[1]) -- Wrong
-            assert.is_not_nil(previews[2]) -- Correct
-            assert.is_not_nil(previews[1].days)
-            assert.is_not_nil(previews[2].days)
-            assert.is_not_nil(previews[1].formatted)
-            assert.is_not_nil(previews[2].formatted)
+            assert.is_not_nil(previews[fsrs.Rating.Wrong]) -- Wrong
+            assert.is_not_nil(previews[fsrs.Rating.Correct]) -- Correct
+            assert.is_not_nil(previews[fsrs.Rating.Wrong].days)
+            assert.is_not_nil(previews[fsrs.Rating.Correct].days)
+            assert.is_not_nil(previews[fsrs.Rating.Wrong].formatted)
+            assert.is_not_nil(previews[fsrs.Rating.Correct].formatted)
         end)
 
         it("should show shorter interval for wrong than correct", function()
@@ -406,15 +406,15 @@ describe("fsrs", function()
 
             local previews = scheduler:preview_intervals(card_state)
 
-            assert.is_true(previews[1].days < previews[2].days)
+            assert.is_true(previews[fsrs.Rating.Wrong].days < previews[fsrs.Rating.Correct].days)
         end)
     end)
 
     describe("rating_name", function()
         it("should return correct names", function()
             local fsrs = require("flashcards.fsrs")
-            assert.equals("Wrong", fsrs.rating_name(1))
-            assert.equals("Correct", fsrs.rating_name(2))
+            assert.equals("Wrong", fsrs.rating_name(0))
+            assert.equals("Correct", fsrs.rating_name(1))
             assert.equals("Unknown", fsrs.rating_name(99))
         end)
     end)

@@ -954,7 +954,7 @@ describe("storage", function()
       local now = utils.now()
       store:add_review({
         card_id = "c1",
-        rating = 2,
+        rating = 1,
         reviewed_at = now,
         elapsed_ms = 3500,
         state_before = "new",
@@ -962,7 +962,7 @@ describe("storage", function()
       })
       store:add_review({
         card_id = "c1",
-        rating = 2,
+        rating = 1,
         reviewed_at = now + 60,
         elapsed_ms = 2100,
         state_before = "learning",
@@ -971,7 +971,7 @@ describe("storage", function()
 
       local reviews = store:get_reviews("c1")
       assert.equals(2, #reviews)
-      assert.equals(2, reviews[1].rating)
+      assert.equals(1, reviews[1].rating)
       assert.equals(3500, reviews[1].elapsed_ms)
       assert.equals("new", reviews[1].state_before)
       assert.equals("learning", reviews[1].state_after)
@@ -989,6 +989,42 @@ describe("storage", function()
 
       local reviews = store:get_reviews("c1")
       assert.same({}, reviews)
+    end)
+
+    it("remove_last_review rolls back daily stats", function()
+      store:upsert_card({
+        id = "c1",
+        file_path = "test.md",
+        line = 1,
+        front = "Q",
+        back = "A",
+        tags = {},
+      })
+
+      local now = utils.now()
+      local today = utils.format_date(now)
+      store:add_review({
+        card_id = "c1",
+        rating = 1,
+        reviewed_at = now,
+        elapsed_ms = 1000,
+        state_before = "new",
+        state_after = "learning",
+      })
+
+      assert.is_true(store:remove_last_review())
+      assert.same({}, store:get_reviews("c1"))
+
+      local daily = store:get_daily_stats(7)
+      local found = false
+      for _, day in ipairs(daily) do
+        if day.date == today then
+          found = true
+          assert.equals(0, day.new_count)
+          assert.equals(0, day.review_count)
+        end
+      end
+      assert.is_true(found)
     end)
   end)
 
@@ -1054,8 +1090,8 @@ describe("storage", function()
 
       store:update_card_state("c2", { status = "review", due_date = now - 100 })
 
-      store:add_review({ card_id = "c1", rating = 2, reviewed_at = now, elapsed_ms = 3000, state_before = "new", state_after = "learning" })
-      store:add_review({ card_id = "c2", rating = 1, reviewed_at = now, elapsed_ms = 5000, state_before = "review", state_after = "relearning" })
+      store:add_review({ card_id = "c1", rating = 1, reviewed_at = now, elapsed_ms = 3000, state_before = "new", state_after = "learning" })
+      store:add_review({ card_id = "c2", rating = 0, reviewed_at = now, elapsed_ms = 5000, state_before = "review", state_after = "relearning" })
 
       local stats = store:get_stats()
       assert.equals(2, stats.total_cards)
@@ -1070,8 +1106,8 @@ describe("storage", function()
 
       store:upsert_card({ id = "c1", file_path = "a.md", line = 1, front = "Q1", back = "A1", tags = {} })
 
-      store:add_review({ card_id = "c1", rating = 2, reviewed_at = now, elapsed_ms = 3000, state_before = "new", state_after = "learning" })
-      store:add_review({ card_id = "c1", rating = 2, reviewed_at = now + 60, elapsed_ms = 2000, state_before = "learning", state_after = "review" })
+      store:add_review({ card_id = "c1", rating = 1, reviewed_at = now, elapsed_ms = 3000, state_before = "new", state_after = "learning" })
+      store:add_review({ card_id = "c1", rating = 1, reviewed_at = now + 60, elapsed_ms = 2000, state_before = "learning", state_after = "review" })
 
       local daily = store:get_daily_stats(7)
       assert.is_table(daily)
@@ -1111,7 +1147,7 @@ describe("storage", function()
 
       store:add_review({
         card_id = "persist1",
-        rating = 2,
+        rating = 1,
         reviewed_at = utils.now(),
         elapsed_ms = 2000,
         state_before = "new",
@@ -1139,6 +1175,29 @@ describe("storage", function()
       assert.equals(1, #reviews)
 
       store2:close()
+    end)
+
+    it("migrates legacy review ratings from 1/2 to 0/1 on load", function()
+      store:close()
+      store = nil
+
+      local ok = utils.write_file(tmp_path, vim.fn.json_encode({
+        cards = {},
+        reviews = {
+          { card_id = "c1", rating = 1, reviewed_at = utils.now(), elapsed_ms = 1000, state_before = "new", state_after = "learning" },
+          { card_id = "c1", rating = 2, reviewed_at = utils.now() + 60, elapsed_ms = 1200, state_before = "learning", state_after = "review" },
+        },
+        daily_stats = {},
+      }))
+      assert.is_true(ok)
+
+      store = Storage.new("json", tmp_path)
+      store:init()
+
+      local reviews = store:get_reviews("c1")
+      assert.equals(2, #reviews)
+      assert.equals(0, reviews[1].rating)
+      assert.equals(1, reviews[2].rating)
     end)
 
     it("close saves and clears data", function()

@@ -24,6 +24,8 @@ local DEFAULT_STATE = {
   scheduled_days = 0,
 }
 
+local CURRENT_SCHEMA_VERSION = 2
+
 -- ============================================================================
 -- Constructor
 -- ============================================================================
@@ -46,6 +48,7 @@ end
 --- @return table
 local function empty_data()
   return {
+    schema_version = CURRENT_SCHEMA_VERSION,
     cards = {},
     reviews = {},
     daily_stats = {},
@@ -92,6 +95,24 @@ local function build_card(id, entry)
   }
 end
 
+local function migrate_data(data)
+  local version = data.schema_version or 1
+
+  if version < 2 then
+    for _, review in ipairs(data.reviews or {}) do
+      if review.rating == 2 then
+        review.rating = 1
+      elseif review.rating == 1 then
+        review.rating = 0
+      end
+    end
+    version = 2
+  end
+
+  data.schema_version = version
+  return data
+end
+
 -- ============================================================================
 -- Initialization / Persistence
 -- ============================================================================
@@ -102,11 +123,12 @@ function JsonStore:init()
   if content and #content > 0 then
     local ok, decoded = pcall(vim.fn.json_decode, content)
     if ok and type(decoded) == "table" then
-      self.data = decoded
+      self.data = migrate_data(decoded)
       -- Ensure required top-level keys exist
       self.data.cards = self.data.cards or {}
       self.data.reviews = self.data.reviews or {}
       self.data.daily_stats = self.data.daily_stats or {}
+      self.data.schema_version = self.data.schema_version or CURRENT_SCHEMA_VERSION
     else
       self.data = empty_data()
     end
@@ -130,11 +152,22 @@ end
 --- Remove the most recent review from the review log (for undo support).
 --- @return boolean true if a review was removed
 function JsonStore:remove_last_review()
-  if #self.data.reviews > 0 then
-    table.remove(self.data.reviews)
-    return true
+  if #self.data.reviews == 0 then
+    return false
   end
-  return false
+
+  local review = table.remove(self.data.reviews)
+  local date = review and review.reviewed_at and utils.format_date(review.reviewed_at)
+  local day = date and self.data.daily_stats[date] or nil
+  if day then
+    local key = review.state_before == "new" and "new_count" or "review_count"
+    day[key] = math.max(0, (day[key] or 0) - 1)
+    if (day.new_count or 0) == 0 and (day.review_count or 0) == 0 then
+      self.data.daily_stats[date] = nil
+    end
+  end
+
+  return true
 end
 
 --- Save data and clear in-memory store.
@@ -492,7 +525,7 @@ function JsonStore:get_stats()
   local correct_count = 0
   local total_time_ms = 0
   for _, review in ipairs(self.data.reviews) do
-    if review.rating == 2 then
+    if review.rating == 1 then
       correct_count = correct_count + 1
     end
     total_time_ms = total_time_ms + (review.elapsed_ms or 0)

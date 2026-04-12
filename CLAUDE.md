@@ -21,25 +21,24 @@ This plugin replaces Anki with a native Neovim experience. Cards are defined inl
 nvim-flashcards/
 ├── lua/
 │   └── flashcards/
-│       ├── init.lua              # Plugin entry point, setup()
+│       ├── init.lua              # Plugin entry point, setup(), commands, autocommands
 │       ├── config.lua            # Configuration management
 │       ├── parser.lua            # Markdown parsing, card extraction
+│       ├── scanner.lua           # Directory walking + ID write-back
 │       ├── fsrs.lua              # FSRS algorithm implementation
-│       ├── db.lua                # SQLite database layer
-│       ├── scheduler.lua         # Review scheduling logic
+│       ├── scheduler.lua         # Review scheduling/session logic
+│       ├── storage/
+│       │   ├── init.lua          # Storage factory
+│       │   └── json.lua          # JSON storage backend
 │       ├── ui/
-│       │   ├── init.lua          # UI module entry
 │       │   ├── review.lua        # Review session floating window
 │       │   ├── stats.lua         # Statistics panel
-│       │   └── components.lua    # Reusable UI components (nui.nvim)
+│       │   └── components.lua    # Reusable UI helpers
 │       ├── telescope/
-│       │   ├── init.lua          # Telescope extension
-│       │   └── pickers.lua       # Custom pickers (browse, due, tags)
+│       │   └── init.lua          # Telescope extension + pickers
 │       └── utils.lua             # Shared utilities
 ├── plugin/
 │   └── flashcards.lua            # Lazy-load trigger
-├── doc/
-│   └── flashcards.txt            # Vimdoc help
 ├── tests/
 │   └── flashcards/               # Plenary-based tests
 ├── CLAUDE.md                     # This file
@@ -50,11 +49,11 @@ nvim-flashcards/
 
 | Dependency | Purpose | Required |
 |------------|---------|----------|
-| `nvim-lua/plenary.nvim` | Async, paths, testing | Yes |
-| `MunifTanjim/nui.nvim` | UI components (popups, layouts) | Yes |
-| `nvim-telescope/telescope.nvim` | Card browsing and search | Yes |
-| `kkharji/sqlite.lua` | Persistent card state storage | Yes |
-| `nvim-treesitter/nvim-treesitter` | Syntax highlighting in UI | Recommended |
+| `nvim-lua/plenary.nvim` | Testing, utilities | Yes |
+| `MunifTanjim/nui.nvim` | Floating review/stats UI | Yes |
+| `nvim-telescope/telescope.nvim` | Browse/search/tag pickers | Yes |
+| `nvim-treesitter/nvim-treesitter` | Markdown + code block highlighting in UI | Recommended |
+| `kkharji/sqlite.lua` | Optional future/alternate SQLite backend | No |
 
 ## Card Syntax
 
@@ -195,8 +194,8 @@ The plugin uses a simplified FSRS-inspired algorithm with **binary ratings** (Wr
 
 ### Binary Ratings
 
-- **Wrong (1)**: Failed to recall - resets to learning
-- **Correct (2)**: Successfully recalled - increases stability
+- **Wrong (0 / false)**: Failed to recall - resets to learning
+- **Correct (1 / true)**: Successfully recalled - increases stability
 
 ### Key Features
 
@@ -211,85 +210,83 @@ The plugin uses a simplified FSRS-inspired algorithm with **binary ratings** (Wr
 
 local FSRS = {}
 
--- Binary ratings
+-- Binary ratings (C-bool style)
 M.Rating = {
-    Wrong = 1,   -- Failed to recall
-    Correct = 2, -- Successfully recalled
+    Wrong = 0,   -- Failed to recall / false
+    Correct = 1, -- Successfully recalled / true
 }
 
--- Configurable parameters
-FSRS.defaults = {
-    target_correctness = 0.85,  -- 85% retention target
-    maximum_interval = 365,
-    weights = {
-        initial_stability_wrong = 0.5,
-        initial_stability_correct = 3.0,
-        learning_steps = { 1, 10, 60 },  -- minutes
-    },
-}
-
-function FSRS:schedule(card, rating, now)
-    -- Returns next review date, updated stability, difficulty
+function FSRS:schedule(card_state, rating, now)
+    -- Returns next review state + interval preview
 end
 ```
 
-## Database Schema
+## Storage Schema
 
-Using SQLite via `sqlite.lua` for persistence:
+Current implementation uses JSON storage by default (`lua/flashcards/storage/json.lua`).
 
-```sql
--- Cards table
-CREATE TABLE cards (
-    id TEXT PRIMARY KEY,           -- Unique ID stored in source file
-    file_path TEXT NOT NULL,
-    line_number INTEGER,
-    front TEXT NOT NULL,
-    back TEXT NOT NULL,
-    reversible INTEGER DEFAULT 0,  -- 1 if card uses :?: (shows either side)
-    created_at INTEGER,
-    updated_at INTEGER
-);
-
--- Card state (FSRS parameters)
-CREATE TABLE card_states (
-    card_id TEXT PRIMARY KEY,
-    state TEXT DEFAULT 'new',      -- new, learning, review, relearning
-    stability REAL DEFAULT 0,
-    difficulty REAL DEFAULT 0,
-    elapsed_days INTEGER DEFAULT 0,
-    scheduled_days INTEGER DEFAULT 0,
-    due_date INTEGER,              -- Unix timestamp
-    last_review INTEGER,
-    reps INTEGER DEFAULT 0,
-    lapses INTEGER DEFAULT 0,
-    FOREIGN KEY (card_id) REFERENCES cards(id)
-);
-
--- Review history (for analytics and FSRS optimization)
-CREATE TABLE reviews (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    card_id TEXT,
-    rating INTEGER,                -- 1-4
-    reviewed_at INTEGER,
-    elapsed_ms INTEGER,            -- Time to answer
-    state_before TEXT,
-    state_after TEXT,
-    FOREIGN KEY (card_id) REFERENCES cards(id)
-);
-
--- Tags
-CREATE TABLE card_tags (
-    card_id TEXT,
-    tag TEXT,
-    PRIMARY KEY (card_id, tag),
-    FOREIGN KEY (card_id) REFERENCES cards(id)
-);
-
--- Indexes
-CREATE INDEX idx_cards_file ON cards(file_path);
-CREATE INDEX idx_states_due ON card_states(due_date);
-CREATE INDEX idx_tags_tag ON card_tags(tag);
+```json
+{
+  "schema_version": 2,
+  "cards": {
+    "abc12345": {
+      "file_path": "math/algebra.md",
+      "line": 12,
+      "front": "Question",
+      "back": "Answer",
+      "reversible": false,
+      "suspended": false,
+      "active": true,
+      "tags": ["math", "math/algebra"],
+      "note": "optional source note",
+      "state": {
+        "status": "new",
+        "stability": 0,
+        "difficulty": 0,
+        "due_date": null,
+        "last_review": null,
+        "reps": 0,
+        "lapses": 0,
+        "learning_step": 0,
+        "elapsed_days": 0,
+        "scheduled_days": 0
+      },
+      "created_at": 0,
+      "updated_at": 0,
+      "lost_at": null
+    }
+  },
+  "reviews": [
+    {
+      "card_id": "abc12345",
+      "rating": 0,
+      "reviewed_at": 1710000000,
+      "elapsed_ms": 3200,
+      "state_before": "review",
+      "state_after": "relearning"
+    },
+    {
+      "card_id": "abc12345",
+      "rating": 1,
+      "reviewed_at": 1710086400,
+      "elapsed_ms": 2100,
+      "state_before": "relearning",
+      "state_after": "review"
+    }
+  ],
+  "daily_stats": {
+    "2026-04-12": {
+      "new_count": 3,
+      "review_count": 12
+    }
+  }
+}
 ```
+
+Notes:
+- `rating` now uses `0=Wrong`, `1=Correct`
+- Legacy saved review logs with `1/2` are migrated to `0/1` on load
+- JSON backend is current source of truth; SQLite remains optional/future work
 
 ## UI Design
 
@@ -322,7 +319,7 @@ Using `nui.nvim` for a floating window with binary rating:
 │  #algorithms #searching                                     │
 │                                                             │
 ├─────────────────────────────────────────────────────────────┤
-│  [1] Wrong    [2] Correct      [q] Quit                     │
+│  [0] Wrong    [1] Correct      [q] Quit                     │
 │   <1m          <7d                                          │
 │                                                             │
 │  (Also: n=Wrong, y=Correct, s=Skip, u=Undo, e=Edit)        │
@@ -340,10 +337,8 @@ Using `nui.nvim` for a floating window with binary rating:
 ### Implementation
 
 ```lua
--- Uses nui.nvim components
+-- Uses nui.nvim popup
 local Popup = require("nui.popup")
-local Layout = require("nui.layout")
-local event = require("nui.utils.autocmd").event
 
 local function create_review_window()
     local popup = Popup({
@@ -357,12 +352,12 @@ local function create_review_window()
             },
         },
         buf_options = {
-            modifiable = false,
-            filetype = "markdown",  -- Enables treesitter highlighting
+            modifiable = true,
+            filetype = "text", -- render first, then reattach markdown TS safely
         },
         win_options = {
-            conceallevel = 2,
-            concealcursor = "n",
+            conceallevel = 0,
+            concealcursor = "",
         },
     })
     return popup
@@ -429,9 +424,10 @@ return M
 | `:FlashcardsReview #tag` | Review cards with specific tag |
 | `:FlashcardsScan` | Rescan all markdown files |
 | `:FlashcardsStats` | Show statistics dashboard |
-| `:FlashcardsEdit` | Jump to card source file |
 | `:FlashcardsBrowse` | Open Telescope browser |
-| `:FlashcardsSync` | Manual database sync |
+| `:FlashcardsDue` | Browse due cards |
+| `:FlashcardsTags` | Browse tag hierarchy |
+| `:FlashcardsOrphans` | Manage orphaned/lost cards |
 
 ## Configuration
 
@@ -442,18 +438,16 @@ require("flashcards").setup({
         "~/notes",
     },
 
-    -- Database location (pick one):
-    -- Option 1: Directory path (db_filename will be appended)
+    -- Storage backend
+    storage = "json",
+
+    -- Storage path: directory or full file path
     db_path = "~/notes/assets/",
-    -- Option 2: Full file path
-    -- db_path = "~/.local/share/nvim/flashcards.db",
-    -- Option 3: Leave nil, uses db_filename in each configured directory (default)
-    -- db_path = nil,
-    -- db_filename = ".flashcards.db",
+    -- db_path = "~/.local/share/nvim/flashcards.json",
 
     -- FSRS parameters with binary rating
     fsrs = {
-        target_correctness = 0.85,  -- 85% target retention (0.7-0.95)
+        target_correctness = 0.85,  -- 85% target retention
         maximum_interval = 365,
         enable_fuzz = true,
         weights = {
@@ -466,10 +460,13 @@ require("flashcards").setup({
         width = 0.7,
         height = 0.6,
         border = "rounded",
-        show_answer_key = "<Space>",
+        show_note = true,
+        conceallevel = 0,
+        concealcursor = "",
         keymaps = {
-            wrong = "1",    -- Binary: wrong
-            correct = "2",  -- Binary: correct
+            show_answer = "<Space>",
+            wrong = "0",    -- Binary false
+            correct = "1",  -- Binary true
             quit = "q",
             edit = "e",
             skip = "s",
@@ -492,7 +489,7 @@ require("flashcards").setup({
 ### Phase 1: Core Foundation ✅
 1. [x] Project structure setup
 2. [x] Configuration module (`config.lua`)
-3. [x] Database schema and SQLite integration (`db.lua`)
+3. [x] JSON storage backend + storage factory (`storage/json.lua`, `storage/init.lua`)
 4. [x] Markdown parser for card extraction (`parser.lua`)
 5. [x] FSRS algorithm with binary rating (`fsrs.lua`)
 
@@ -508,7 +505,7 @@ require("flashcards").setup({
 2. [x] Markdown rendering with treesitter
 3. [x] Code block syntax highlighting
 4. [x] Progress and statistics display
-5. [x] Keyboard navigation (binary: 1=Wrong, 2=Correct)
+5. [x] Keyboard navigation (binary: 0=Wrong, 1=Correct)
 
 ### Phase 4: Telescope Integration ✅
 1. [x] Due cards picker
@@ -529,15 +526,25 @@ require("flashcards").setup({
 
 ### Treesitter Highlighting in Floating Windows
 
-To enable syntax highlighting in the review buffer:
+Review popup uses defensive Tree-sitter attach flow to avoid markdown conceal/injection crashes during rapid re-render:
 
 ```lua
--- Set buffer filetype to markdown
-vim.bo[buf].filetype = "markdown"
+-- Render with TS detached / filetype=text
+vim.treesitter.stop(buf)
+vim.bo[buf].filetype = "text"
+vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
 
--- Treesitter will automatically attach if installed
--- For code blocks, use injections (built into nvim-treesitter)
+-- Reattach markdown TS after render
+vim.schedule(function()
+    vim.bo[buf].filetype = "markdown"
+    vim.treesitter.start(buf, "markdown")
+end)
 ```
+
+Notes:
+- Keep `conceallevel = 0` in review popup by default
+- Preserve markdown + fenced code highlighting
+- Avoid crash path from markdown conceal provider during redraws
 
 ### Card ID Generation
 

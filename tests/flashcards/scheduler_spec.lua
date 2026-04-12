@@ -133,7 +133,7 @@ describe("scheduler", function()
       local state = card_state.state or card_state.status or "new"
       local new_state = deep_copy(card_state)
 
-      if rating == 2 then -- Correct
+      if rating == 1 then -- Correct
         if state == "new" or state == "learning" or state == "relearning" then
           new_state.status = "review"
           new_state.state = "review"
@@ -175,7 +175,7 @@ describe("scheduler", function()
 
     function fsrs:preview_intervals(card_state, now)
       local previews = {}
-      for rating = 1, 2 do
+      for rating = 0, 1 do
         local _, intervals = self:schedule(card_state, rating, now)
         previews[rating] = intervals
       end
@@ -354,7 +354,7 @@ describe("scheduler", function()
       session:next_card()
 
       -- Answer correct
-      session:answer(2)
+      session:answer(1)
 
       -- Card state should be updated in store
       local new_state = store:get_card_state("card1")
@@ -365,7 +365,7 @@ describe("scheduler", function()
       -- Review should be recorded in store
       assert.equals(1, #store._reviews)
       assert.equals("card1", store._reviews[1].card_id)
-      assert.equals(2, store._reviews[1].rating)
+      assert.equals(1, store._reviews[1].rating)
       assert.equals("new", store._reviews[1].state_before)
       assert.equals("review", store._reviews[1].state_after)
 
@@ -392,7 +392,7 @@ describe("scheduler", function()
       session:next_card()
 
       -- Answer wrong -> should go to learning with 1 minute interval
-      session:answer(1)
+      session:answer(0)
 
       -- Card should be re-queued (since learning with < 30 min interval)
       local found = false
@@ -432,7 +432,7 @@ describe("scheduler", function()
       local _, is_reversed_before = session:current_card()
 
       -- Answer correct
-      session:answer(2)
+      session:answer(1)
 
       -- Undo
       local ok = session:undo()
@@ -524,6 +524,37 @@ describe("scheduler", function()
       -- Reversed map should preserve the value for the skipped card
       assert.equals(original_reversed, session.reversed_map[card1_id])
     end)
+
+    it("wraps to first remaining card when skipping last card", function()
+      local cards = {
+        { id = "card1", front = "Q1", back = "A1", tags = {}, reversible = false },
+        { id = "card2", front = "Q2", back = "A2", tags = {}, reversible = false },
+        { id = "card3", front = "Q3", back = "A3", tags = {}, reversible = false },
+      }
+      local states = {
+        card1 = { status = "new" },
+        card2 = { status = "new" },
+        card3 = { status = "new" },
+      }
+
+      local store = make_mock_store(cards, states)
+      local fsrs = make_mock_fsrs()
+      local session = scheduler.new_session(store, fsrs)
+      session:load_cards()
+
+      session:next_card()
+      session:next_card()
+      session:next_card()
+      local current = session:current_card()
+      assert.equals("card3", current.id)
+
+      session:skip()
+
+      local next_card = session:current_card()
+      assert.is_not_nil(next_card)
+      assert.equals("card1", next_card.id)
+      assert.equals("card3", session.queue[#session.queue].id)
+    end)
   end)
 
   -- ========================================================================
@@ -550,7 +581,7 @@ describe("scheduler", function()
       session:next_card()
 
       -- Answer correct -> stays review with 5d interval
-      session:answer(2)
+      session:answer(1)
 
       -- Should NOT be re-queued (review state, interval > 30 min)
       local found = false
@@ -587,12 +618,12 @@ describe("scheduler", function()
 
       local previews = session:preview_intervals()
       assert.is_not_nil(previews)
-      assert.is_not_nil(previews[1], "should have Wrong preview")
-      assert.is_not_nil(previews[2], "should have Correct preview")
+      assert.is_not_nil(previews[0], "should have Wrong preview")
+      assert.is_not_nil(previews[1], "should have Correct preview")
+      assert.is_not_nil(previews[0].days)
+      assert.is_not_nil(previews[0].formatted)
       assert.is_not_nil(previews[1].days)
       assert.is_not_nil(previews[1].formatted)
-      assert.is_not_nil(previews[2].days)
-      assert.is_not_nil(previews[2].formatted)
     end)
   end)
 
@@ -626,13 +657,13 @@ describe("scheduler", function()
 
       -- Review all cards: correct, wrong, correct
       session:next_card()
-      session:answer(2) -- correct
+      session:answer(1) -- correct
 
       session:next_card()
-      session:answer(1) -- wrong
+      session:answer(0) -- wrong
 
       session:next_card()
-      session:answer(2) -- correct
+      session:answer(1) -- correct
 
       local summary = session:summary()
       assert.is_not_nil(summary)
@@ -812,7 +843,7 @@ describe("scheduler", function()
       assert.is_true(ok)
 
       -- Answer to complete the card (correct -> goes to review, no requeue)
-      session:answer(2)
+      session:answer(1)
 
       -- Should be done (no more cards unless re-queued)
       ok = session:next_card()

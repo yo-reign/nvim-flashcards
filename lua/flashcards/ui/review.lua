@@ -5,7 +5,6 @@
 local M = {}
 
 local Popup = require("nui.popup")
-local event = require("nui.utils.autocmd").event
 
 local config = require("flashcards.config")
 local scheduler = require("flashcards.scheduler")
@@ -22,6 +21,7 @@ local state = {
   popup = nil,
   showing_answer = false,
   card_shown_at = nil,
+  treesitter_seq = 0,
 }
 
 -- ============================================================================
@@ -60,11 +60,11 @@ local function create_popup()
     },
     buf_options = {
       modifiable = true,
-      filetype = "markdown",
+      filetype = "text",
     },
     win_options = {
-      conceallevel = 2,
-      concealcursor = "nvic",
+      conceallevel = ui_config.conceallevel,
+      concealcursor = ui_config.concealcursor,
       wrap = true,
       linebreak = true,
       cursorline = false,
@@ -95,6 +95,46 @@ local function add_language_labels(content)
     end
   end
   return table.concat(result, "\n")
+end
+
+local function stop_markdown_highlighting(bufnr)
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+
+  state.treesitter_seq = state.treesitter_seq + 1
+  if vim.treesitter and vim.treesitter.stop then
+    pcall(vim.treesitter.stop, bufnr)
+  end
+  if vim.bo[bufnr].filetype ~= "text" then
+    vim.bo[bufnr].filetype = "text"
+  end
+end
+
+local function refresh_markdown_highlighting(bufnr)
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+
+  local seq = state.treesitter_seq
+  vim.schedule(function()
+    if seq ~= state.treesitter_seq then
+      return
+    end
+    if not state.popup or state.popup.bufnr ~= bufnr then
+      return
+    end
+    if not vim.api.nvim_buf_is_valid(bufnr) then
+      return
+    end
+
+    if vim.bo[bufnr].filetype ~= "markdown" then
+      vim.bo[bufnr].filetype = "markdown"
+    end
+    if vim.treesitter and vim.treesitter.start then
+      pcall(vim.treesitter.start, bufnr, "markdown")
+    end
+  end)
 end
 
 --- Apply highlight groups to rendered buffer lines.
@@ -162,6 +202,7 @@ local function render_complete()
   end
 
   local bufnr = state.popup.bufnr
+  stop_markdown_highlighting(bufnr)
   vim.bo[bufnr].modifiable = true
 
   local summary = state.session:summary()
@@ -185,6 +226,7 @@ local function render_complete()
 
   vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
   vim.bo[bufnr].modifiable = false
+  refresh_markdown_highlighting(bufnr)
 
   -- Apply highlights to summary
   local ns = vim.api.nvim_create_namespace("flashcards_review")
@@ -213,6 +255,7 @@ local function render_card()
   end
 
   local bufnr = state.popup.bufnr
+  stop_markdown_highlighting(bufnr)
   vim.bo[bufnr].modifiable = true
 
   local lines = {}
@@ -307,8 +350,8 @@ local function render_card()
       return { top = top, mid = mid, bot_ln = bot_ln, bottom = bottom, width = width }
     end
 
-    local wrong_interval = fmt_interval(intervals and intervals[1])
-    local correct_interval = fmt_interval(intervals and intervals[2])
+    local wrong_interval = fmt_interval(intervals and intervals[fsrs.Rating.Wrong])
+    local correct_interval = fmt_interval(intervals and intervals[fsrs.Rating.Correct])
 
     local btn_wrong   = make_button(keymaps.wrong, "Wrong", wrong_interval)
     local btn_correct = make_button(keymaps.correct, "Correct", correct_interval)
@@ -345,6 +388,7 @@ local function render_card()
   vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
   vim.bo[bufnr].modifiable = false
   apply_highlights(bufnr, lines)
+  refresh_markdown_highlighting(bufnr)
 end
 
 -- ============================================================================
@@ -439,11 +483,6 @@ function M.start(store, tag)
   state.popup:mount()
   setup_keymaps(state.popup)
 
-  -- Close on buffer leave
-  state.popup:on(event.BufLeave, function()
-    M.close()
-  end)
-
   state.showing_answer = false
   state.session:next_card()
   render_card()
@@ -459,7 +498,7 @@ end
 
 --- Answer the current card with a rating.
 --- If the answer is not yet showing, reveals it instead.
---- @param rating number 1 (Wrong) or 2 (Correct)
+--- @param rating number 0 (Wrong/false) or 1 (Correct/true)
 function M.answer(rating)
   if not state.session then
     return
@@ -556,7 +595,8 @@ end
 --- Close the review session and unmount the popup.
 --- Shows a summary notification if any cards were reviewed.
 function M.close()
-  -- Nil popup first to prevent re-entrant close from BufLeave
+  state.treesitter_seq = state.treesitter_seq + 1
+
   local popup = state.popup
   state.popup = nil
   if popup then
