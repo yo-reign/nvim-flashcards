@@ -160,6 +160,10 @@ function Session:next_card()
     self.current_idx = self.current_idx + 1
     return true
   end
+
+  -- Move past the queue end so current_card()/answer()/skip() cannot keep
+  -- operating on the final card after the session is complete.
+  self.current_idx = #self.queue + 1
   return false
 end
 

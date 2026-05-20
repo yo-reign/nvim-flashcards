@@ -848,6 +848,14 @@ describe("scheduler", function()
       -- Should be done (no more cards unless re-queued)
       ok = session:next_card()
       assert.is_false(ok)
+
+      -- Completing the session should clear the current card so stray input
+      -- cannot answer the final card again from the completion screen.
+      local current = session:current_card()
+      assert.is_nil(current)
+      session:answer(1)
+      assert.equals(1, #session.reviews)
+      assert.equals(1, #store._reviews)
     end)
 
     it("current_card returns nil when no card is current", function()

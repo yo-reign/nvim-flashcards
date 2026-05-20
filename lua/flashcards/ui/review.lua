@@ -20,6 +20,7 @@ local state = {
   session = nil,
   popup = nil,
   showing_answer = false,
+  completed = false,
   card_shown_at = nil,
   treesitter_seq = 0,
 }
@@ -201,6 +202,10 @@ local function render_complete()
     return
   end
 
+  state.completed = true
+  state.showing_answer = false
+  state.card_shown_at = nil
+
   local bufnr = state.popup.bufnr
   stop_markdown_highlighting(bufnr)
   vim.bo[bufnr].modifiable = true
@@ -253,6 +258,7 @@ local function render_card()
     render_complete()
     return
   end
+  state.completed = false
 
   local bufnr = state.popup.bufnr
   stop_markdown_highlighting(bufnr)
@@ -485,12 +491,17 @@ function M.start(store, tag)
   setup_keymaps(state.popup)
 
   state.showing_answer = false
+  state.completed = false
   state.session:next_card()
   render_card()
 end
 
 --- Reveal the answer for the current card.
 function M.show_answer()
+  if state.completed then
+    return
+  end
+
   if not state.showing_answer then
     state.showing_answer = true
     render_card()
@@ -501,7 +512,7 @@ end
 --- If the answer is not yet showing, reveals it instead.
 --- @param rating number 0 (Wrong/false) or 1 (Correct/true)
 function M.answer(rating)
-  if not state.session then
+  if not state.session or state.completed then
     return
   end
 
@@ -526,7 +537,7 @@ end
 
 --- Skip the current card, moving it to the end of the queue.
 function M.skip()
-  if not state.session then
+  if not state.session or state.completed then
     return
   end
 
@@ -551,7 +562,7 @@ end
 
 --- Undo the last review, restoring the previous card and its state.
 function M.undo()
-  if not state.session then
+  if not state.session or state.completed then
     return
   end
 
@@ -566,6 +577,10 @@ end
 --- Jump to the current card's source file for editing.
 --- Closes the review session first.
 function M.edit_card()
+  if state.completed then
+    return
+  end
+
   local card = state.session and state.session:current_card()
   if not card then
     return
@@ -626,6 +641,7 @@ function M.close()
   end
 
   state.showing_answer = false
+  state.completed = false
   state.card_shown_at = nil
 end
 
