@@ -89,11 +89,13 @@ local function card_previewer(store)
 
       local lines = {}
       local bufnr = self.state.bufnr
+      local front = utils.trim_display_text(card.front)
+      local back = utils.trim_display_text(card.back)
 
       -- Front
       table.insert(lines, "## Front")
       table.insert(lines, "")
-      for _, line in ipairs(utils.lines(card.front)) do
+      for _, line in ipairs(utils.lines(front)) do
         table.insert(lines, line)
       end
 
@@ -105,7 +107,7 @@ local function card_previewer(store)
       -- Back
       table.insert(lines, "## Back")
       table.insert(lines, "")
-      for _, line in ipairs(utils.lines(card.back)) do
+      for _, line in ipairs(utils.lines(back)) do
         table.insert(lines, line)
       end
 

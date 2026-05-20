@@ -240,6 +240,14 @@ local function try_parse_inline(line, line_num, file_path, scope_stack)
   -- Strip tags from back
   back = utils.strip_tags(back)
 
+  -- Extract leading source refs like `(1.1.2:6)` from the front so the
+  -- marker can render as metadata instead of quiz text.
+  local source_ref
+  source_ref, front = utils.extract_source_ref(utils.trim(front))
+  if utils.trim(front) == "" then
+    return nil
+  end
+
   -- Nest inline tags under scope prefix, then merge with scope tags
   local scope_tags = collect_scope_tags(scope_stack)
   local nested_inline = nest_tags_in_scope(scope_stack, inline_tags)
@@ -252,7 +260,7 @@ local function try_parse_inline(line, line_num, file_path, scope_stack)
     id = id,
     suspended = suspended,
     tags = all_tags,
-    note = nil,
+    note = source_ref,
     line = line_num,
     file_path = file_path,
   }
@@ -331,7 +339,7 @@ function M.parse(file_path, content, scan_root)
     has_separator = false,
   }
 
-  -- Track last card index for note annotation attachment
+  -- Track last card index for legacy note annotation attachment
   local last_card_idx = nil
   local last_card_end_line = nil
 
@@ -356,12 +364,15 @@ function M.parse(file_path, content, scan_root)
         goto continue
       end
 
-      -- Check for note annotation (must be line immediately after a card)
+      -- Check for legacy note annotation (must be line immediately after a card).
+      -- Source refs parsed from `(section:paragraph)` prefixes take precedence.
       local note = utils.extract_note(line)
       if note and last_card_idx and last_card_end_line == line_num - 1 then
-        -- Expand template variables in note
-        note = utils.expand_template_vars(note, file_path, scan_root)
-        cards[last_card_idx].note = note
+        if not cards[last_card_idx].note then
+          -- Expand template variables in note
+          note = utils.expand_template_vars(note, file_path, scan_root)
+          cards[last_card_idx].note = note
+        end
         goto continue
       end
 
@@ -490,14 +501,18 @@ function M.parse(file_path, content, scan_root)
         local nested_close = nest_tags_in_scope(scope_stack, close_tags)
         local all_tags = merge_tags(scope_tags, nested_close)
 
+        local front = trim_multiline(fenced.front_lines)
+        local source_ref
+        source_ref, front = utils.extract_source_ref(front)
+
         local card = {
-          front = trim_multiline(fenced.front_lines),
+          front = front,
           back = trim_multiline(fenced.back_lines),
           reversible = fenced.reversible,
           id = fenced.id,
           suspended = fenced.suspended,
           tags = all_tags,
-          note = nil,
+          note = source_ref,
           line = fenced.open_line,
           file_path = file_path,
         }

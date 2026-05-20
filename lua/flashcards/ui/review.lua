@@ -262,9 +262,10 @@ local function render_card()
   local icons = config.options.ui.icons
   local keymaps = config.options.ui.keymaps
 
-  -- Determine display content based on reversed state
-  local display_front = is_reversed and card.back or card.front
-  local display_back = is_reversed and card.front or card.back
+  -- Determine display content based on reversed state. Trim display-only
+  -- separator whitespace from older stored inline cards.
+  local display_front = utils.trim_display_text(is_reversed and card.back or card.front)
+  local display_back = utils.trim_display_text(is_reversed and card.front or card.back)
 
   -- Header: state icon, card state name, reversed indicator, progress, timer
   local card_state = state.session.store:get_card_state(card.id) or {}

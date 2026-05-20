@@ -12,6 +12,7 @@ A Neovim plugin for markdown-based spaced repetition flashcards using a simplifi
 - **Named tag scopes** - Apply tags to blocks of cards without repeating yourself
 - **Multi-line support** - Code blocks, lists, and complex formatting preserved
 - **Reversible cards** - Cards that can quiz you in either direction
+- **Source refs** - Leading section prefixes like `(1.2.3:5)` render as review footnotes
 - **Telescope integration** - Browse, search, and filter cards
 - **Orphan management** - Soft-delete lost cards, reactivate or purge them
 - **JSON storage** - Human-readable data file you can manually inspect and edit
@@ -72,7 +73,7 @@ A Neovim plugin for markdown-based spaced repetition flashcards using a simplifi
    :FlashcardsReview
    ```
 
-4. Rate cards: `1` = Wrong, `2` = Correct (or `n`/`y`)
+4. Rate cards: `0` = Wrong, `1` = Correct (or `n`/`y`)
 
 ## Card Syntax
 
@@ -81,6 +82,8 @@ A Neovim plugin for markdown-based spaced repetition flashcards using a simplifi
 ```markdown
 Question text ::: Answer text #tag1 #tag2
 ```
+
+Spaces around `:::` / `:?:` are optional; front/back text is trimmed during parsing and display.
 
 After scanning, an ID comment is automatically added:
 ```markdown
@@ -135,16 +138,27 @@ Definition or explanation here
 :?:end #vocabulary
 ```
 
-### Source Annotations
+### Source References
 
-Add a note on the line after a card to record its source:
+Prefix a card front with a textbook/source location to record where it came from:
 
 ```markdown
-What is the quadratic formula? ::: x = (-b +/- sqrt(b^2 - 4ac)) / 2a #math
-<!-- note: Serge Lang Ch.1 p.12 -->
+(1.2.3:5) What is the quadratic formula? ::: x = (-b +/- sqrt(b^2 - 4ac)) / 2a #math
 ```
 
-Notes are shown as footnotes during review when `config.ui.show_note = true`.
+For fenced cards, put the source ref at the start of the front:
+
+```markdown
+:::card
+(1.2.3:5-7) What does the theorem say?
+:-:
+It says ...
+:::end #math
+```
+
+The prefix stays in your markdown file, but review/search stores the cleaned front (`What is the quadratic formula?`) and shows the source ref as a footnote when `config.ui.show_note = true`.
+
+Legacy `<!-- note: ... -->` comments are still parsed for existing cards, but new source locations should use leading `(section:paragraph)` prefixes.
 
 ### Suspended Cards
 
@@ -158,7 +172,7 @@ Suspended cards are still visible when browsing but never appear in review sessi
 
 ### Template Variables
 
-Template variables expand at parse time, useful in tag scopes and notes:
+Template variables expand at parse time, useful in tag scopes:
 
 - `{{file.name}}` - filename without extension
 - `{{file.dir}}` - parent directory name
@@ -166,7 +180,10 @@ Template variables expand at parse time, useful in tag scopes and notes:
 
 ```markdown
 :#{{file.dir}}/{{file.name}}:
-<!-- note: {{file.name}} (1.2.3:5) -->
+
+(1.2.3:5) What is the quadratic formula? ::: x = (-b +/- sqrt(b^2 - 4ac)) / 2a
+
+:#/math/algebra:
 ```
 
 ## Tags
@@ -223,8 +240,8 @@ The first card gets `#python` and `#python/decorators` (nested scopes build hier
 | Key | Action |
 |-----|--------|
 | `Space` | Show answer |
-| `1` or `n` | Wrong |
-| `2` or `y` | Correct |
+| `0` or `n` | Wrong |
+| `1` or `y` | Correct |
 | `s` | Skip card |
 | `u` | Undo last answer |
 | `e` | Edit card source file |
@@ -270,11 +287,11 @@ require("flashcards").setup({
         width = 0.7,
         height = 0.6,
         border = "rounded",
-        show_note = true, -- show source annotations during review
+        show_note = true, -- show source refs/notes during review
         keymaps = {
             show_answer = "<Space>",
-            wrong = "1",
-            correct = "2",
+            wrong = "0",
+            correct = "1",
             quit = "q",
             skip = "s",
             undo = "u",

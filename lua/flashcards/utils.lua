@@ -59,14 +59,40 @@ function M.format_card_id(id, flags)
 end
 
 -- ============================================================================
--- Note Annotations
+-- Source/Note Annotations
 -- ============================================================================
 
---- Extract note content from a `<!-- note: ... -->` comment.
+--- Extract note content from a legacy `<!-- note: ... -->` comment.
 --- @param text string
 --- @return string|nil
 function M.extract_note(text)
   return text:match("<!%-%-% *note:% *(.-)% *%-%->")
+end
+
+--- Extract a leading source/section reference from card front text.
+---
+--- Source refs use textbook-style prefixes such as `(1.1.2:6)` or
+--- `(1.1.2:8-10)`. The marker is metadata, not quiz text, so callers can
+--- store it as the card note while rendering the cleaned front.
+---
+--- To avoid false positives on ordinary parenthetical prompts, this only
+--- matches numeric section refs with at least one dotted section component
+--- before the paragraph separator (`:`).
+--- @param text string
+--- @return string|nil source_ref
+--- @return string cleaned_text original text with the prefix removed, or text unchanged
+function M.extract_source_ref(text)
+  local ref, rest = text:match("^%s*%((%d+%.%d[%d%.]*:%d[%d%-]*)%)%s*(.*)$")
+  if not ref then
+    return nil, text
+  end
+
+  -- Reject malformed refs like `1..2:3`, `1.2.:3`, or `1.2:3-`.
+  if ref:find("%.%.") or ref:find("%.:") or ref:find("%-$") then
+    return nil, text
+  end
+
+  return ref, M.trim(rest)
 end
 
 -- ============================================================================
@@ -158,6 +184,41 @@ end
 --- @return string
 function M.trim(s)
   return s:match("^%s*(.-)%s*$")
+end
+
+--- Trim whitespace for UI display without disturbing multiline formatting.
+---
+--- Inline cards historically stored with spaces around `:::` may have leading
+--- or trailing spaces in front/back text. Review and preview UIs should hide
+--- that noise even before a rescan normalizes storage. For multiline cards,
+--- only blank outer lines are removed so indentation inside code/list content is
+--- preserved.
+--- @param text string|nil
+--- @return string
+function M.trim_display_text(text)
+  if not text or text == "" then
+    return ""
+  end
+
+  if not text:find("\n", 1, true) then
+    return M.trim(text)
+  end
+
+  local line_list = M.lines(text)
+
+  while #line_list > 0 and not line_list[1]:match("%S") do
+    table.remove(line_list, 1)
+  end
+
+  while #line_list > 0 and not line_list[#line_list]:match("%S") do
+    table.remove(line_list)
+  end
+
+  if #line_list == 1 then
+    line_list[1] = M.trim(line_list[1])
+  end
+
+  return M.join_lines(line_list)
 end
 
 --- Truncate a string to max length, appending "..." if truncated.

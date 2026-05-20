@@ -78,6 +78,21 @@ describe("scanner", function()
       assert.is_not_nil(store:get_card("card0003"))
     end)
 
+    it("stores leading section refs as notes and strips them from front text", function()
+      local content = "(1.1.2:6) Can a number be both rational and irrational? ::: No <!-- fc:sect001 -->"
+      local path = tmpfile(content)
+
+      local result = scanner.scan_file(path, store, "/tmp")
+      os.remove(path)
+
+      assert.equals(1, result.cards_found)
+      local card = store:get_card("sect001")
+      assert.is_not_nil(card)
+      assert.equals("Can a number be both rational and irrational?", card.front)
+      assert.equals("No", card.back)
+      assert.equals("1.1.2:6", card.note)
+    end)
+
     it("handles empty files without error", function()
       local path = tmpfile("")
 

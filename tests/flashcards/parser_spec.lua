@@ -110,6 +110,43 @@ describe("parser", function()
       assert.equals("Serge Lang Ch.1 p.12", cards[1].note)
     end)
 
+    it("extracts leading section references from inline card fronts", function()
+      local cards, errors = parser.parse("test.md", "(1.1.2:6) Can a number be both? ::: No", "")
+      assert.equals(0, #errors)
+      assert.equals(1, #cards)
+      assert.equals("Can a number be both?", cards[1].front)
+      assert.equals("No", cards[1].back)
+      assert.equals("1.1.2:6", cards[1].note)
+    end)
+
+    it("extracts section reference ranges from inline card fronts", function()
+      local cards, errors = parser.parse("test.md", "(1.1.2:8-10) Name the major sets ::: N, W, Z, Q, R", "")
+      assert.equals(0, #errors)
+      assert.equals(1, #cards)
+      assert.equals("Name the major sets", cards[1].front)
+      assert.equals("1.1.2:8-10", cards[1].note)
+    end)
+
+    it("leaves ordinary leading parentheses in inline fronts", function()
+      local cards, errors = parser.parse("test.md", "(optional) What is X? ::: Y", "")
+      assert.equals(0, #errors)
+      assert.equals(1, #cards)
+      assert.equals("(optional) What is X?", cards[1].front)
+      assert.is_nil(cards[1].note)
+    end)
+
+    it("prefers leading section references over legacy note comments", function()
+      local content = table.concat({
+        "(1.1.2:6) Q ::: A",
+        "<!-- note: legacy comment -->",
+      }, "\n")
+      local cards, errors = parser.parse("test.md", content, "")
+      assert.equals(0, #errors)
+      assert.equals(1, #cards)
+      assert.equals("Q", cards[1].front)
+      assert.equals("1.1.2:6", cards[1].note)
+    end)
+
     it("ignores lines inside markdown code blocks", function()
       local content = table.concat({
         "```",
@@ -390,6 +427,37 @@ describe("parser", function()
       assert.equals(0, #errors)
       assert.equals(1, #cards)
       assert.equals("From textbook p.42", cards[1].note)
+    end)
+
+    it("extracts leading section references from fenced card fronts", function()
+      local content = table.concat({
+        ":::card",
+        "(1.1.2:8-10) Name the major sets of numbers.",
+        ":-:",
+        "N, W, Z, Q, R",
+        ":::end #math",
+      }, "\n")
+      local cards, errors = parser.parse("test.md", content, "")
+      assert.equals(0, #errors)
+      assert.equals(1, #cards)
+      assert.equals("Name the major sets of numbers.", cards[1].front)
+      assert.equals("1.1.2:8-10", cards[1].note)
+    end)
+
+    it("extracts fenced section references on their own first line", function()
+      local content = table.concat({
+        ":::card",
+        "(1.1.2:8-10)",
+        "Name the major sets of numbers.",
+        ":-:",
+        "N, W, Z, Q, R",
+        ":::end #math",
+      }, "\n")
+      local cards, errors = parser.parse("test.md", content, "")
+      assert.equals(0, #errors)
+      assert.equals(1, #cards)
+      assert.equals("Name the major sets of numbers.", cards[1].front)
+      assert.equals("1.1.2:8-10", cards[1].note)
     end)
 
     it("sets line number to opening :::card line", function()
