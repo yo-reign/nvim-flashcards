@@ -13,6 +13,7 @@ A Neovim plugin for markdown-based spaced repetition flashcards using a simplifi
 - **Multi-line support** - Code blocks, lists, and complex formatting preserved
 - **Reversible cards** - Cards that can quiz you in either direction
 - **Source refs** - Leading section prefixes like `(1.2.3:5)` render as review footnotes
+- **Optional review scratchpad** - Type temporary work/answers before revealing the back of a card
 - **Telescope integration** - Browse, search, and filter cards
 - **Orphan management** - Soft-delete lost cards, reactivate or purge them
 - **JSON storage** - Human-readable data file you can manually inspect and edit
@@ -64,11 +65,13 @@ A Neovim plugin for markdown-based spaced repetition flashcards using a simplifi
 1. Add card syntax to your markdown files (see Card Syntax below)
 
 2. Scan for cards:
+
    ```
    :FlashcardsScan
    ```
 
 3. Start a review session:
+
    ```
    :FlashcardsReview
    ```
@@ -86,6 +89,7 @@ Question text ::: Answer text #tag1 #tag2
 Spaces around `:::` / `:?:` are optional; front/back text is trimmed during parsing and display.
 
 After scanning, an ID comment is automatically added:
+
 ```markdown
 Question text ::: Answer text #tag1 #tag2 <!-- fc:abc12345 -->
 ```
@@ -120,6 +124,7 @@ It reverses a string using recursion.
 ```
 
 After scanning, an ID is added to the opening line:
+
 ```markdown
 :::card <!-- fc:xyz98765 -->
 ```
@@ -189,6 +194,7 @@ Template variables expand at parse time, useful in tag scopes:
 ## Tags
 
 Tags use `/` for hierarchy:
+
 - `#math` - Top-level tag
 - `#math/calc` - Sub-tag
 - Reviewing `#math` includes all `#math/*` cards
@@ -245,7 +251,44 @@ The first card gets `#python` and `#python/decorators` (nested scopes build hier
 | `s` | Skip card |
 | `u` | Undo last answer |
 | `e` | Edit card source file |
+| `i` | Focus scratchpad and enter insert mode (when enabled) |
+| `S` | Show/hide scratchpad after the answer is revealed (when enabled) |
+| `C` | Clear scratchpad contents for the current card (when enabled) |
 | `q` or `Esc` | Quit session |
+
+## Review Scratchpad
+
+The review scratchpad is an optional, temporary text area shown with the front of a card. It is useful for working through math/programming problems, writing a predicted answer, or externalizing your reasoning before revealing the back.
+
+It is **off by default**. Enable it in `setup()` (or use `scratchpad = true`
+for the defaults):
+
+```lua
+require("flashcards").setup({
+    ui = {
+        scratchpad = {
+            enabled = true,
+            height = 6,          -- minimum number of editable lines
+            show_on_answer = true, -- keep visible after revealing the back
+        },
+    },
+})
+```
+
+Behavior:
+
+- The scratchpad appears under the front/question before the answer is shown.
+- Press `i` to focus it, type normally, then press `Esc` to leave insert mode.
+- Scratchpad text is temporary review-session state; it is not written to your
+  markdown cards or flashcards database.
+- By default, your scratch work remains visible after revealing the back so you
+  can compare it with the answer.
+- On the answer/back screen, press `S` to hide or show the scratchpad without
+  losing the text.
+- Press `C` to clear the current card's scratchpad.
+- Moving to another card resets the scratchpad for a fresh attempt.
+
+All scratchpad keys can be customized through `ui.keymaps`.
 
 ## Configuration
 
@@ -288,6 +331,11 @@ require("flashcards").setup({
         height = 0.6,
         border = "rounded",
         show_note = true, -- show source refs/notes during review
+        scratchpad = {
+            enabled = false,      -- off by default
+            height = 6,           -- minimum editable lines when enabled
+            show_on_answer = true, -- keep visible after revealing the back
+        },
         keymaps = {
             show_answer = "<Space>",
             wrong = "0",
@@ -296,6 +344,9 @@ require("flashcards").setup({
             skip = "s",
             undo = "u",
             edit = "e",
+            focus_scratchpad = "i",
+            toggle_scratchpad = "S",
+            clear_scratchpad = "C",
         },
     },
 
@@ -313,38 +364,49 @@ require("flashcards").setup({
 
 ### Card Tracking
 
-Cards are identified by unique IDs stored as markdown comments (`<!-- fc:abc12345 -->`):
+Cards are identified by unique IDs stored as markdown comments
+(`<!-- fc:abc12345 -->`):
 
-- **IDs are auto-generated** when you scan - new cards get IDs written back to the source file
+- **IDs are auto-generated** when you scan - new cards get IDs written back
+  to the source file
 - **Edit freely** - change card content without losing review history
 - **Stable identity** - as long as the ID comment stays, the card keeps its progress
 - **Git-friendly** - IDs are visible in your notes and sync naturally
 
 ### Storage
 
-Card state is stored in a human-readable JSON file (`flashcards.json`). You can inspect and manually edit it. The file location is controlled by `db_path` in your config.
+Card state is stored in a human-readable JSON file (`flashcards.json`). You can
+inspect and manually edit it. The file location is controlled by `db_path` in
+your config.
 
-A SQLite backend is planned for a future release, which will offer better performance for large collections (thousands of cards).
+A SQLite backend is planned for a future release, which will offer better
+performance for large collections (thousands of cards).
 
 ### Orphan Management
 
-When a card's ID disappears from your files (deleted, moved outside scan dirs), it becomes "orphaned":
+When a card's ID disappears from your files (deleted, moved outside scan dirs),
+it becomes "orphaned":
 
 - The card is **soft-deleted** (`active: false`) - review history is preserved
 - If the same ID reappears later, the card is **automatically reactivated**
-- Use `:FlashcardsOrphans` to permanently delete or manually reactivate orphaned cards
+- Use `:FlashcardsOrphans` to permanently delete or manually reactivate
+  orphaned cards
 
 ### Learning Phase
 
-New cards go through learning steps (1min, 10min, 1hour by default) before graduating to the regular review schedule. During a session, learning cards may reappear if due within 30 minutes.
+New cards go through learning steps (1min, 10min, 1hour by default) before
+graduating to the regular review schedule. During a session, learning cards may
+reappear if due within 30 minutes.
 
 ### Spaced Repetition
 
 The FSRS-inspired algorithm adjusts intervals based on your answers:
+
 - **Correct**: interval increases, difficulty decreases slightly
 - **Wrong**: card returns to learning phase with short intervals
 
-Target retention is configurable (default 85%) - higher targets mean shorter intervals and more reviews.
+Target retention is configurable (default 85%) - higher targets mean shorter
+intervals and more reviews.
 
 ## Telescope Integration
 
@@ -355,6 +417,7 @@ require("telescope").load_extension("flashcards")
 ```
 
 Then use:
+
 - `:Telescope flashcards browse`
 - `:Telescope flashcards due`
 - `:Telescope flashcards tags`

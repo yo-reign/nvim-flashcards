@@ -34,6 +34,11 @@ M.defaults = {
     show_note = true,
     conceallevel = 0,
     concealcursor = "",
+    scratchpad = {
+      enabled = false,
+      height = 6,
+      show_on_answer = true,
+    },
     keymaps = {
       show_answer = "<Space>",
       wrong = "0",
@@ -42,6 +47,9 @@ M.defaults = {
       skip = "s",
       undo = "u",
       edit = "e",
+      focus_scratchpad = "i",
+      toggle_scratchpad = "S",
+      clear_scratchpad = "C",
     },
     icons = {
       correct = "v",
@@ -65,6 +73,7 @@ M.defaults = {
     FlashcardReview = { link = "DiagnosticOk" },
     FlashcardLanguage = { link = "Comment" },
     FlashcardGood = { link = "DiagnosticOk" },
+    FlashcardScratchpad = { link = "Question" },
   },
   auto_sync = true,
 }
@@ -178,6 +187,20 @@ function M.validate()
   if tc then
     if type(tc) ~= "number" or tc < 0.7 or tc > 0.97 then
       return false, "fsrs.target_correctness must be a number between 0.7 and 0.97, got: " .. tostring(tc)
+    end
+  end
+
+  -- scratchpad may be disabled with false, enabled with true, or configured with a table
+  local scratchpad = opts.ui and opts.ui.scratchpad
+  if scratchpad ~= nil then
+    local scratchpad_type = type(scratchpad)
+    if scratchpad_type ~= "boolean" and scratchpad_type ~= "table" then
+      return false, "ui.scratchpad must be a boolean or table, got: " .. tostring(scratchpad_type)
+    end
+    if scratchpad_type == "table" and scratchpad.height ~= nil then
+      if type(scratchpad.height) ~= "number" or scratchpad.height < 1 then
+        return false, "ui.scratchpad.height must be a positive number, got: " .. tostring(scratchpad.height)
+      end
     end
   end
 
