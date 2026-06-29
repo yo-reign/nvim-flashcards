@@ -277,7 +277,10 @@ require("flashcards").setup({
 
 Behavior:
 
-- The scratchpad appears under the front/question before the answer is shown.
+- The scratchpad appears near the bottom of the question view, directly above
+  the "Press `<Space>` to show answer" prompt when there is room. Long
+  multi-line fronts remain scrollable instead of being truncated just to force
+  bottom alignment.
 - Press `i` to focus it, type normally, then press `Esc` to leave insert mode.
 - Scratchpad text is temporary review-session state; it is not written to your
   markdown cards or flashcards database.

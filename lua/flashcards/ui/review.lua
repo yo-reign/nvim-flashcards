@@ -168,6 +168,41 @@ local function scratchpad_min_height()
   return math.max(1, math.floor(height))
 end
 
+local function scratchpad_content_line_count()
+  return math.max(scratchpad_min_height(), #state.scratchpad_lines, 1)
+end
+
+local function scratchpad_rendered_line_count()
+  -- leading blank, header, top divider, editable content, bottom divider
+  return scratchpad_content_line_count() + 4
+end
+
+local function rendered_row_count(lines, winid)
+  local width = math.max(1, vim.api.nvim_win_get_width(winid))
+  local rows = 0
+  for _, line in ipairs(lines) do
+    local display_width = vim.fn.strdisplaywidth(line)
+    rows = rows + math.max(1, math.ceil(display_width / width))
+  end
+  return rows
+end
+
+local function append_bottom_spacer(lines, reserved_lines)
+  local winid = state.popup and state.popup.winid
+  if not winid or not vim.api.nvim_win_is_valid(winid) then
+    return
+  end
+
+  -- Use display rows instead of raw line count so long/wrapped front text does
+  -- not cause us to add spacer lines that would push the prompt off screen.
+  local available = vim.api.nvim_win_get_height(winid)
+  local used_rows = rendered_row_count(lines, winid)
+  local spacer = available - used_rows - reserved_lines
+  for _ = 1, math.max(0, spacer) do
+    table.insert(lines, "")
+  end
+end
+
 local function scratchpad_key(name, fallback)
   local keymaps = config.options.ui.keymaps or {}
   return keymaps[name] or fallback
@@ -250,12 +285,22 @@ local function save_scratchpad()
     return
   end
 
+  local function is_scratchpad_chrome(line)
+    local stripped = vim.trim(line)
+    return stripped:match("^Scratchpad")
+      or stripped:match("^\u{2500}+$")
+      or stripped:match("^Press .+ to show answer")
+      or stripped:match("^%(Also:")
+  end
+
   local cleaned = {}
   for _, line in ipairs(buf_lines) do
     if line:sub(1, 2) == "  " then
       line = line:sub(3)
     end
-    table.insert(cleaned, line)
+    if not is_scratchpad_chrome(line) then
+      table.insert(cleaned, line)
+    end
   end
 
   while #cleaned > 0 and cleaned[#cleaned] == "" do
@@ -279,7 +324,7 @@ local function render_scratchpad(lines)
   table.insert(lines, "  " .. string.rep("\u{2500}", 50))
 
   local content_start = #lines + 1
-  local line_count = math.max(scratchpad_min_height(), #state.scratchpad_lines, 1)
+  local line_count = scratchpad_content_line_count()
   for i = 1, line_count do
     table.insert(lines, "  " .. (state.scratchpad_lines[i] or ""))
   end
@@ -466,8 +511,8 @@ local function render_card()
     table.insert(lines, "  " .. line)
   end
 
-  if scratchpad_enabled() then
-    if state.showing_answer and not state.scratchpad_visible_on_answer then
+  if scratchpad_enabled() and state.showing_answer then
+    if not state.scratchpad_visible_on_answer then
       table.insert(lines, "")
       table.insert(lines, string.format(
         "  Scratchpad hidden (%s to show)",
@@ -577,18 +622,26 @@ local function render_card()
     end
     table.insert(lines, "  (Also: " .. table.concat(hints, ", ") .. ")")
   else
-    -- Prompt to reveal answer
-    table.insert(lines, "")
-    table.insert(lines, "")
+    -- Keep the scratchpad near the bottom of the question view, directly above
+    -- the reveal prompt. If a long front consumes the window, skip the spacer so
+    -- no content is hidden just to force bottom alignment.
     local show_key = keymaps.show_answer or "<Space>"
+    local prompt_lines = {
+      "",
+      "",
+      string.format("  Press %s to show answer", show_key),
+    }
+
     if scratchpad_enabled() then
-      table.insert(lines, string.format(
-        "  Press %s to show answer (%s edits scratchpad)",
-        show_key,
-        scratchpad_key("focus_scratchpad", "i")
-      ))
+      append_bottom_spacer(lines, scratchpad_rendered_line_count() + #prompt_lines)
+      render_scratchpad(lines)
+      for _, line in ipairs(prompt_lines) do
+        table.insert(lines, line)
+      end
     else
-      table.insert(lines, string.format("  Press %s to show answer", show_key))
+      for _, line in ipairs(prompt_lines) do
+        table.insert(lines, line)
+      end
     end
   end
 
@@ -619,6 +672,64 @@ local function finish_scratchpad_edit()
       end
     end)
   end
+end
+
+local function scratchpad_cursor_context()
+  local popup = state.popup
+  if not popup or not popup.winid or not vim.api.nvim_win_is_valid(popup.winid) then
+    return nil
+  end
+  if not popup.bufnr or not vim.api.nvim_buf_is_valid(popup.bufnr) then
+    return nil
+  end
+
+  local start_row, finish_row = scratchpad_rows_from_marks(popup.bufnr)
+  if not start_row or not finish_row then
+    return nil
+  end
+
+  local cursor = vim.api.nvim_win_get_cursor(popup.winid)
+  return {
+    bufnr = popup.bufnr,
+    row = cursor[1] - 1,
+    col = cursor[2],
+    start_row = start_row,
+    finish_row = finish_row,
+  }
+end
+
+local function guarded_insert_key(key)
+  local ctx = scratchpad_cursor_context()
+  local termcode = vim.api.nvim_replace_termcodes(key, true, false, true)
+  if not ctx then
+    return termcode
+  end
+
+  -- If the cursor somehow leaves the scratchpad while the buffer is modifiable,
+  -- block edits rather than allowing review UI text to be changed.
+  if ctx.row < ctx.start_row or ctx.row >= ctx.finish_row then
+    return ""
+  end
+
+  -- Scratchpad content lines are rendered with a two-space UI indent. Do not let
+  -- insert-mode deletion cross the first editable row into the front/card text.
+  local indent_col = 2
+  if (key == "<BS>" or key == "<C-w>") and ctx.row == ctx.start_row and ctx.col <= indent_col then
+    return ""
+  end
+
+  if key == "<C-u>" and ctx.row == ctx.start_row then
+    return ""
+  end
+
+  if key == "<Del>" and ctx.row == ctx.finish_row - 1 then
+    local line = vim.api.nvim_buf_get_lines(ctx.bufnr, ctx.row, ctx.row + 1, false)[1] or ""
+    if ctx.col >= #line then
+      return ""
+    end
+  end
+
+  return termcode
 end
 
 -- ============================================================================
@@ -689,6 +800,12 @@ local function setup_keymaps(popup)
     map(scratchpad_key("clear_scratchpad", "C"), function()
       M.clear_scratchpad()
     end, "Clear scratchpad")
+
+    for _, key in ipairs({ "<BS>", "<C-w>", "<C-u>", "<Del>" }) do
+      vim.keymap.set("i", key, function()
+        return guarded_insert_key(key)
+      end, { buffer = bufnr, expr = true, desc = "Protect scratchpad boundaries" })
+    end
 
     vim.api.nvim_create_autocmd({ "InsertLeave", "BufLeave" }, {
       buffer = bufnr,
