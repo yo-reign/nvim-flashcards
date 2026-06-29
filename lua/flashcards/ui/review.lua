@@ -804,7 +804,12 @@ local function setup_keymaps(popup)
     for _, key in ipairs({ "<BS>", "<C-w>", "<C-u>", "<Del>" }) do
       vim.keymap.set("i", key, function()
         return guarded_insert_key(key)
-      end, { buffer = bufnr, expr = true, desc = "Protect scratchpad boundaries" })
+      end, {
+        buffer = bufnr,
+        expr = true,
+        replace_keycodes = false,
+        desc = "Protect scratchpad boundaries",
+      })
     end
 
     vim.api.nvim_create_autocmd({ "InsertLeave", "BufLeave" }, {
