@@ -21,12 +21,6 @@ describe("config", function()
       assert.equals("rounded", config.options.ui.border)
       assert.equals(0, config.options.ui.conceallevel)
       assert.equals("", config.options.ui.concealcursor)
-      assert.is_false(config.options.ui.scratchpad.enabled)
-      assert.equals(6, config.options.ui.scratchpad.height)
-      assert.is_true(config.options.ui.scratchpad.show_on_answer)
-      assert.equals("i", config.options.ui.keymaps.focus_scratchpad)
-      assert.equals("S", config.options.ui.keymaps.toggle_scratchpad)
-      assert.equals("C", config.options.ui.keymaps.clear_scratchpad)
       assert.is_true(config.options.auto_sync)
     end)
 
@@ -49,34 +43,6 @@ describe("config", function()
       assert.is_true(config.options.fsrs.enable_fuzz)
       assert.equals("json", config.options.storage)
       assert.same({ "*.md", "*.markdown" }, config.options.file_patterns)
-      assert.is_false(config.options.ui.scratchpad.enabled)
-      assert.equals(6, config.options.ui.scratchpad.height)
-    end)
-
-    it("supports enabling and configuring the review scratchpad", function()
-      config.setup({
-        directories = { "/tmp/test-notes" },
-        ui = {
-          scratchpad = {
-            enabled = true,
-            height = 8,
-            show_on_answer = false,
-          },
-          keymaps = {
-            focus_scratchpad = "I",
-            toggle_scratchpad = "T",
-            clear_scratchpad = "X",
-          },
-        },
-      })
-
-      assert.is_true(config.options.ui.scratchpad.enabled)
-      assert.equals(8, config.options.ui.scratchpad.height)
-      assert.is_false(config.options.ui.scratchpad.show_on_answer)
-      assert.equals("I", config.options.ui.keymaps.focus_scratchpad)
-      assert.equals("T", config.options.ui.keymaps.toggle_scratchpad)
-      assert.equals("X", config.options.ui.keymaps.clear_scratchpad)
-      assert.equals("0", config.options.ui.keymaps.wrong)
     end)
 
     it("normalizes directory paths", function()
@@ -133,16 +99,6 @@ describe("config", function()
       local ok, err = config.validate()
       assert.is_false(ok)
       assert.truthy(err:find("target_correctness"))
-    end)
-
-    it("returns false for invalid scratchpad config", function()
-      config.setup({
-        directories = { "/tmp/test-notes" },
-        ui = { scratchpad = { height = 0 } },
-      })
-      local ok, err = config.validate()
-      assert.is_false(ok)
-      assert.truthy(err:find("scratchpad.height"))
     end)
   end)
 
