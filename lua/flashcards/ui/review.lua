@@ -24,11 +24,10 @@ local state = {
   card_shown_at = nil,
   treesitter_seq = 0,
   scratchpad_card_id = nil,
-  scratchpad_lines = {},
-  scratchpad_range = nil,
-  scratchpad_marks = nil,
+  scratchpad_bufnr = nil,
+  scratchpad_winid = nil,
   scratchpad_visible_on_answer = true,
-  scratchpad_editing = false,
+  scratchpad_footer_lines = 0,
 }
 
 -- ============================================================================
@@ -148,8 +147,6 @@ end
 -- Scratchpad Helpers
 -- ============================================================================
 
-local scratchpad_ns = vim.api.nvim_create_namespace("flashcards_scratchpad")
-
 local function get_scratchpad_config()
   local ui_config = config.options and config.options.ui or {}
   local scratchpad = ui_config.scratchpad or {}
@@ -168,13 +165,9 @@ local function scratchpad_min_height()
   return math.max(1, math.floor(height))
 end
 
-local function scratchpad_content_line_count()
-  return math.max(scratchpad_min_height(), #state.scratchpad_lines, 1)
-end
-
-local function scratchpad_rendered_line_count()
-  -- leading blank, header, top divider, editable content, bottom divider
-  return scratchpad_content_line_count() + 4
+local function scratchpad_total_height()
+  -- Floating window content height plus border rows.
+  return scratchpad_min_height() + 2
 end
 
 local function rendered_row_count(lines, winid)
@@ -208,136 +201,135 @@ local function scratchpad_key(name, fallback)
   return keymaps[name] or fallback
 end
 
+local function close_scratchpad_window(wipe_buffer)
+  if state.scratchpad_winid and vim.api.nvim_win_is_valid(state.scratchpad_winid) then
+    pcall(vim.api.nvim_win_close, state.scratchpad_winid, true)
+  end
+  state.scratchpad_winid = nil
+
+  if wipe_buffer and state.scratchpad_bufnr and vim.api.nvim_buf_is_valid(state.scratchpad_bufnr) then
+    pcall(vim.api.nvim_buf_delete, state.scratchpad_bufnr, { force = true })
+    state.scratchpad_bufnr = nil
+  end
+end
+
 local function reset_scratchpad()
+  close_scratchpad_window(true)
   state.scratchpad_card_id = nil
-  state.scratchpad_lines = {}
-  state.scratchpad_range = nil
-  state.scratchpad_marks = nil
   state.scratchpad_visible_on_answer = true
-  state.scratchpad_editing = false
+  state.scratchpad_footer_lines = 0
+end
+
+local function ensure_scratchpad_buffer()
+  if state.scratchpad_bufnr and vim.api.nvim_buf_is_valid(state.scratchpad_bufnr) then
+    return state.scratchpad_bufnr
+  end
+
+  local bufnr = vim.api.nvim_create_buf(false, true)
+  state.scratchpad_bufnr = bufnr
+  vim.bo[bufnr].buftype = "nofile"
+  vim.bo[bufnr].bufhidden = "hide"
+  vim.bo[bufnr].swapfile = false
+  vim.bo[bufnr].filetype = "text"
+  vim.bo[bufnr].modifiable = true
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "" })
+  pcall(vim.api.nvim_buf_set_name, bufnr, "flashcards://scratchpad")
+  return bufnr
 end
 
 local function ensure_scratchpad_for_card(card_id)
   if state.scratchpad_card_id == card_id then
+    ensure_scratchpad_buffer()
     return
   end
 
+  close_scratchpad_window(true)
   local scratchpad = get_scratchpad_config()
   state.scratchpad_card_id = card_id
-  state.scratchpad_lines = {}
-  state.scratchpad_range = nil
-  state.scratchpad_marks = nil
   state.scratchpad_visible_on_answer = scratchpad.show_on_answer ~= false
-  state.scratchpad_editing = false
+  state.scratchpad_footer_lines = 0
+  ensure_scratchpad_buffer()
 end
 
-local function set_scratchpad_marks(bufnr)
-  vim.api.nvim_buf_clear_namespace(bufnr, scratchpad_ns, 0, -1)
-  state.scratchpad_marks = nil
+local function render_scratchpad_placeholder(lines, footer_lines)
+  state.scratchpad_footer_lines = footer_lines or 0
 
-  if not state.scratchpad_range then
-    return
+  for _ = 1, scratchpad_total_height() do
+    table.insert(lines, "")
   end
-
-  state.scratchpad_marks = {
-    start = vim.api.nvim_buf_set_extmark(bufnr, scratchpad_ns, state.scratchpad_range.start_line - 1, 0, {
-      right_gravity = false,
-    }),
-    finish = vim.api.nvim_buf_set_extmark(bufnr, scratchpad_ns, state.scratchpad_range.finish_line - 1, 0, {
-      right_gravity = true,
-    }),
-  }
 end
 
-local function scratchpad_rows_from_marks(bufnr)
-  if state.scratchpad_marks then
-    local start_pos = vim.api.nvim_buf_get_extmark_by_id(bufnr, scratchpad_ns, state.scratchpad_marks.start, {})
-    local finish_pos = vim.api.nvim_buf_get_extmark_by_id(bufnr, scratchpad_ns, state.scratchpad_marks.finish, {})
-    if start_pos and start_pos[1] and finish_pos and finish_pos[1] then
-      return start_pos[1], finish_pos[1]
-    end
+local function scratchpad_should_show()
+  if not scratchpad_enabled() or not state.session or state.completed then
+    return false
   end
-
-  if state.scratchpad_range then
-    return state.scratchpad_range.start_line - 1, state.scratchpad_range.finish_line - 1
+  if state.showing_answer and not state.scratchpad_visible_on_answer then
+    return false
   end
-
-  return nil, nil
+  return state.scratchpad_card_id ~= nil
 end
 
-local function save_scratchpad()
-  if not state.popup or not state.scratchpad_range then
-    return
+local function scratchpad_float_config()
+  if not state.popup or not state.popup.winid or not vim.api.nvim_win_is_valid(state.popup.winid) then
+    return nil
   end
 
-  local bufnr = state.popup.bufnr
-  if not vim.api.nvim_buf_is_valid(bufnr) then
-    return
-  end
+  local review_row, review_col = unpack(vim.api.nvim_win_get_position(state.popup.winid))
+  local review_height = vim.api.nvim_win_get_height(state.popup.winid)
+  local review_width = vim.api.nvim_win_get_width(state.popup.winid)
+  local height = scratchpad_min_height()
+  local total_height = scratchpad_total_height()
+  local footer = state.scratchpad_footer_lines or 0
+  local row = review_row + review_height - total_height - footer
+  row = math.max(review_row, math.min(row, review_row + math.max(0, review_height - total_height)))
 
-  local start_row, finish_row = scratchpad_rows_from_marks(bufnr)
-  if not start_row or not finish_row or finish_row < start_row then
-    return
-  end
+  local width = math.max(20, review_width - 4)
+  width = math.min(width, math.max(1, review_width - 2))
+  local col = review_col + math.max(0, math.floor((review_width - width) / 2))
 
-  local ok, buf_lines = pcall(vim.api.nvim_buf_get_lines, bufnr, start_row, finish_row, false)
-  if not ok then
-    return
-  end
-
-  local function is_scratchpad_chrome(line)
-    local stripped = vim.trim(line)
-    return stripped:match("^Scratchpad")
-      or stripped:match("^\u{2500}+$")
-      or stripped:match("^Press .+ to show answer")
-      or stripped:match("^%(Also:")
-  end
-
-  local cleaned = {}
-  for _, line in ipairs(buf_lines) do
-    if line:sub(1, 2) == "  " then
-      line = line:sub(3)
-    end
-    if not is_scratchpad_chrome(line) then
-      table.insert(cleaned, line)
-    end
-  end
-
-  while #cleaned > 0 and cleaned[#cleaned] == "" do
-    table.remove(cleaned)
-  end
-
-  state.scratchpad_lines = cleaned
-end
-
-local function render_scratchpad(lines)
   local focus_key = scratchpad_key("focus_scratchpad", "i")
   local clear_key = scratchpad_key("clear_scratchpad", "C")
-  local toggle_key = scratchpad_key("toggle_scratchpad", "S")
-  local hint = string.format("%s edit, %s clear", focus_key, clear_key)
+  local title = string.format(" Scratchpad (%s focus, %s clear) ", focus_key, clear_key)
   if state.showing_answer then
-    hint = hint .. string.format(", %s hide", toggle_key)
+    title = title .. string.format("[%s hide] ", scratchpad_key("toggle_scratchpad", "S"))
   end
 
-  table.insert(lines, "")
-  table.insert(lines, "  Scratchpad (" .. hint .. ")")
-  table.insert(lines, "  " .. string.rep("\u{2500}", 50))
-
-  local content_start = #lines + 1
-  local line_count = scratchpad_content_line_count()
-  for i = 1, line_count do
-    table.insert(lines, "  " .. (state.scratchpad_lines[i] or ""))
-  end
-
-  local content_finish = #lines
-  table.insert(lines, "  " .. string.rep("\u{2500}", 50))
-
-  -- finish_line points at the divider after the editable area. Extmarks keep this
-  -- moving when the user inserts/deletes lines inside the scratchpad.
-  state.scratchpad_range = {
-    start_line = content_start,
-    finish_line = content_finish + 1,
+  return {
+    relative = "editor",
+    row = row,
+    col = col,
+    width = width,
+    height = height,
+    style = "minimal",
+    border = config.options.ui.border,
+    title = title,
+    title_pos = "center",
+    zindex = 70,
   }
+end
+
+local function update_scratchpad_window()
+  if not scratchpad_should_show() then
+    close_scratchpad_window(false)
+    return
+  end
+
+  local bufnr = ensure_scratchpad_buffer()
+  local win_config = scratchpad_float_config()
+  if not win_config then
+    close_scratchpad_window(false)
+    return
+  end
+
+  if state.scratchpad_winid and vim.api.nvim_win_is_valid(state.scratchpad_winid) then
+    vim.api.nvim_win_set_config(state.scratchpad_winid, win_config)
+  else
+    state.scratchpad_winid = vim.api.nvim_open_win(bufnr, false, win_config)
+    vim.wo[state.scratchpad_winid].wrap = true
+    vim.wo[state.scratchpad_winid].linebreak = true
+    vim.wo[state.scratchpad_winid].cursorline = false
+    vim.wo[state.scratchpad_winid].winhl = "FloatBorder:FlashcardScratchpad"
+  end
 end
 
 --- Apply highlight groups to rendered buffer lines.
@@ -467,8 +459,6 @@ local function render_card()
     return
   end
   state.completed = false
-  state.scratchpad_range = nil
-  state.scratchpad_marks = nil
   if scratchpad_enabled() then
     ensure_scratchpad_for_card(card.id)
   end
@@ -511,18 +501,6 @@ local function render_card()
     table.insert(lines, "  " .. line)
   end
 
-  if scratchpad_enabled() and state.showing_answer then
-    if not state.scratchpad_visible_on_answer then
-      table.insert(lines, "")
-      table.insert(lines, string.format(
-        "  Scratchpad hidden (%s to show)",
-        scratchpad_key("toggle_scratchpad", "S")
-      ))
-    else
-      render_scratchpad(lines)
-    end
-  end
-
   -- Track when question is first shown for elapsed_ms timing. Do not reset on
   -- scratchpad re-renders while the user is still working on the same front.
   if not state.showing_answer and not state.card_shown_at then
@@ -555,6 +533,20 @@ local function render_card()
     if config.options.ui.show_note and card.note then
       table.insert(lines, "")
       table.insert(lines, "  [" .. card.note .. "]")
+    end
+
+    if scratchpad_enabled() then
+      if state.scratchpad_visible_on_answer then
+        local rating_footer_lines = 7
+        append_bottom_spacer(lines, scratchpad_total_height() + rating_footer_lines)
+        render_scratchpad_placeholder(lines, rating_footer_lines)
+      else
+        table.insert(lines, "")
+        table.insert(lines, string.format(
+          "  Scratchpad hidden (%s to show)",
+          scratchpad_key("toggle_scratchpad", "S")
+        ))
+      end
     end
 
     -- Rating buttons with interval previews
@@ -633,8 +625,8 @@ local function render_card()
     }
 
     if scratchpad_enabled() then
-      append_bottom_spacer(lines, scratchpad_rendered_line_count() + #prompt_lines)
-      render_scratchpad(lines)
+      append_bottom_spacer(lines, scratchpad_total_height() + #prompt_lines)
+      render_scratchpad_placeholder(lines, #prompt_lines)
       for _, line in ipairs(prompt_lines) do
         table.insert(lines, line)
       end
@@ -646,90 +638,10 @@ local function render_card()
   end
 
   vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
-  set_scratchpad_marks(bufnr)
   vim.bo[bufnr].modifiable = false
   apply_highlights(bufnr, lines)
   refresh_markdown_highlighting(bufnr)
-end
-
-local function finish_scratchpad_edit()
-  if not state.scratchpad_editing then
-    return
-  end
-
-  save_scratchpad()
-  state.scratchpad_editing = false
-
-  local bufnr = state.popup and state.popup.bufnr
-  if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
-    vim.bo[bufnr].modifiable = false
-  end
-
-  if state.popup and state.session and not state.completed then
-    vim.schedule(function()
-      if state.popup and state.session and not state.completed then
-        render_card()
-      end
-    end)
-  end
-end
-
-local function scratchpad_cursor_context()
-  local popup = state.popup
-  if not popup or not popup.winid or not vim.api.nvim_win_is_valid(popup.winid) then
-    return nil
-  end
-  if not popup.bufnr or not vim.api.nvim_buf_is_valid(popup.bufnr) then
-    return nil
-  end
-
-  local start_row, finish_row = scratchpad_rows_from_marks(popup.bufnr)
-  if not start_row or not finish_row then
-    return nil
-  end
-
-  local cursor = vim.api.nvim_win_get_cursor(popup.winid)
-  return {
-    bufnr = popup.bufnr,
-    row = cursor[1] - 1,
-    col = cursor[2],
-    start_row = start_row,
-    finish_row = finish_row,
-  }
-end
-
-local function guarded_insert_key(key)
-  local ctx = scratchpad_cursor_context()
-  local termcode = vim.api.nvim_replace_termcodes(key, true, false, true)
-  if not ctx then
-    return termcode
-  end
-
-  -- If the cursor somehow leaves the scratchpad while the buffer is modifiable,
-  -- block edits rather than allowing review UI text to be changed.
-  if ctx.row < ctx.start_row or ctx.row >= ctx.finish_row then
-    return ""
-  end
-
-  -- Scratchpad content lines are rendered with a two-space UI indent. Do not let
-  -- insert-mode deletion cross the first editable row into the front/card text.
-  local indent_col = 2
-  if (key == "<BS>" or key == "<C-w>") and ctx.row == ctx.start_row and ctx.col <= indent_col then
-    return ""
-  end
-
-  if key == "<C-u>" and ctx.row == ctx.start_row then
-    return ""
-  end
-
-  if key == "<Del>" and ctx.row == ctx.finish_row - 1 then
-    local line = vim.api.nvim_buf_get_lines(ctx.bufnr, ctx.row, ctx.row + 1, false)[1] or ""
-    if ctx.col >= #line then
-      return ""
-    end
-  end
-
-  return termcode
+  update_scratchpad_window()
 end
 
 -- ============================================================================
@@ -800,24 +712,6 @@ local function setup_keymaps(popup)
     map(scratchpad_key("clear_scratchpad", "C"), function()
       M.clear_scratchpad()
     end, "Clear scratchpad")
-
-    for _, key in ipairs({ "<BS>", "<C-w>", "<C-u>", "<Del>" }) do
-      vim.keymap.set("i", key, function()
-        return guarded_insert_key(key)
-      end, {
-        buffer = bufnr,
-        expr = true,
-        replace_keycodes = false,
-        desc = "Protect scratchpad boundaries",
-      })
-    end
-
-    vim.api.nvim_create_autocmd({ "InsertLeave", "BufLeave" }, {
-      buffer = bufnr,
-      callback = function()
-        finish_scratchpad_edit()
-      end,
-    })
   end
 end
 
@@ -842,34 +736,18 @@ function M.focus_scratchpad()
   ensure_scratchpad_for_card(card.id)
   if state.showing_answer and not state.scratchpad_visible_on_answer then
     state.scratchpad_visible_on_answer = true
-    render_card()
-  elseif not state.scratchpad_range then
-    render_card()
   end
 
-  local bufnr = state.popup.bufnr
-  if not vim.api.nvim_buf_is_valid(bufnr) then
-    return
-  end
+  render_card()
+  update_scratchpad_window()
 
-  local start_row = scratchpad_rows_from_marks(bufnr)
-  if not start_row then
-    return
-  end
-
-  local winid = state.popup.winid
+  local winid = state.scratchpad_winid
   if not winid or not vim.api.nvim_win_is_valid(winid) then
     return
   end
 
-  state.scratchpad_editing = true
-  vim.bo[bufnr].modifiable = true
   vim.api.nvim_set_current_win(winid)
-
-  local line = vim.api.nvim_buf_get_lines(bufnr, start_row, start_row + 1, false)[1] or ""
-  local col = line:sub(1, 2) == "  " and 2 or 0
-  pcall(vim.api.nvim_win_set_cursor, winid, { start_row + 1, col })
-  vim.cmd("startinsert!")
+  vim.cmd("startinsert")
 end
 
 --- Toggle whether the scratchpad is shown while the answer/back is visible.
@@ -883,7 +761,6 @@ function M.toggle_scratchpad()
     return
   end
 
-  finish_scratchpad_edit()
   state.scratchpad_visible_on_answer = not state.scratchpad_visible_on_answer
   render_card()
 end
@@ -894,9 +771,11 @@ function M.clear_scratchpad()
     return
   end
 
-  finish_scratchpad_edit()
-  state.scratchpad_lines = {}
-  render_card()
+  ensure_scratchpad_buffer()
+  if state.scratchpad_bufnr and vim.api.nvim_buf_is_valid(state.scratchpad_bufnr) then
+    vim.api.nvim_buf_set_lines(state.scratchpad_bufnr, 0, -1, false, { "" })
+  end
+  update_scratchpad_window()
 end
 
 --- Start a review session.
@@ -943,7 +822,6 @@ function M.show_answer()
   end
 
   if not state.showing_answer then
-    save_scratchpad()
     state.showing_answer = true
     render_card()
   end
@@ -961,8 +839,6 @@ function M.answer(rating)
     M.show_answer()
     return
   end
-
-  save_scratchpad()
 
   local elapsed_ms = 0
   if state.card_shown_at then
@@ -986,7 +862,6 @@ function M.skip()
     return
   end
 
-  save_scratchpad()
   reset_scratchpad()
   state.card_shown_at = nil
   state.session:skip()

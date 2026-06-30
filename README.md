@@ -258,7 +258,10 @@ The first card gets `#python` and `#python/decorators` (nested scopes build hier
 
 ## Review Scratchpad
 
-The review scratchpad is an optional, temporary text area shown with the front of a card. It is useful for working through math/programming problems, writing a predicted answer, or externalizing your reasoning before revealing the back.
+The review scratchpad is an optional, temporary floating text buffer shown with
+cards during review. It is useful for working through math/programming problems,
+writing a predicted answer, or externalizing your reasoning before revealing the
+back.
 
 It is **off by default**. Enable it in `setup()` (or use `scratchpad = true`
 for the defaults):
@@ -268,7 +271,7 @@ require("flashcards").setup({
     ui = {
         scratchpad = {
             enabled = true,
-            height = 6,          -- minimum number of editable lines
+            height = 6,          -- visible scratchpad window lines
             show_on_answer = true, -- keep visible after revealing the back
         },
     },
@@ -277,13 +280,17 @@ require("flashcards").setup({
 
 Behavior:
 
-- The scratchpad appears near the bottom of the question view, directly above
-  the "Press `<Space>` to show answer" prompt when there is room. Long
-  multi-line fronts remain scrollable instead of being truncated just to force
-  bottom alignment.
-- Press `i` to focus it, type normally, then press `Esc` to leave insert mode.
-- Scratchpad text is temporary review-session state; it is not written to your
-  markdown cards or flashcards database.
+- The scratchpad uses its own nofile buffer/window, so normal Neovim editing,
+  motions, text objects, and your regular insert/normal-mode mappings work
+  inside it.
+- It appears near the bottom of the question view, directly above the
+  "Press `<Space>` to show answer" prompt when there is room. Long multi-line
+  fronts remain scrollable instead of being truncated just to force bottom
+  alignment.
+- Press `i` from the review window to focus it and enter insert mode. Use normal
+  window navigation such as `<C-w>p` to return focus to the review window.
+- Scratchpad text is temporary review-session state in that scratch buffer; it
+  is not written to your markdown cards or flashcards database.
 - By default, your scratch work remains visible after revealing the back so you
   can compare it with the answer.
 - On the answer/back screen, press `S` to hide or show the scratchpad without
@@ -336,7 +343,7 @@ require("flashcards").setup({
         show_note = true, -- show source refs/notes during review
         scratchpad = {
             enabled = false,      -- off by default
-            height = 6,           -- minimum editable lines when enabled
+            height = 6,           -- visible scratchpad window lines
             show_on_answer = true, -- keep visible after revealing the back
         },
         keymaps = {
