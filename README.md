@@ -280,6 +280,8 @@ require("flashcards").setup({
         target_correctness = 0.85,  -- 0.7-0.97, higher = more reviews
         maximum_interval = 365,
         enable_fuzz = true,
+        -- Cap first review after learning; false disables
+        graduating_interval_days = 3,
         weights = {
             initial_stability_correct = 3.0,
             initial_stability_wrong = 0.5,
@@ -341,7 +343,10 @@ When a card's ID disappears from your files (deleted, moved outside scan dirs), 
 
 ### Learning Phase
 
-New cards go through learning steps (1min, 10min, 1hour by default) before graduating to the regular review schedule. During a session, learning cards may reappear if due within 30 minutes.
+New cards go through learning steps (1min, 10min, 1hour by default) before
+graduating to the regular review schedule. Future-due learning steps are not
+shown early in the same session; rerun review after the due time if you want to
+continue the same-day learning steps.
 
 ### Spaced Repetition
 
@@ -350,7 +355,11 @@ The FSRS-inspired algorithm adjusts intervals based on your answers:
 - **Correct**: interval increases, difficulty decreases slightly
 - **Wrong**: card returns to learning phase with short intervals
 
-Target retention is configurable (default 85%) - higher targets mean shorter intervals and more reviews.
+Target retention is configurable (default 85%) - higher targets mean shorter
+intervals and more reviews. The first interval after a new card graduates from
+learning is capped by `graduating_interval_days` (default 3 days) to avoid an
+overly large initial jump; set it to `false` to restore the old uncapped
+behavior.
 
 ## Telescope Integration
 

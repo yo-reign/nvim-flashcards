@@ -201,12 +201,14 @@ end
 -- Answering
 -- ============================================================================
 
---- Maximum interval (in days) for re-queuing learning cards.
+--- Maximum interval (in days) for re-queuing already-due learning cards.
+--- Future-due learning steps are not reinserted into the active queue because
+--- that makes 10m/1h steps appear immediately after only a few other cards.
 local REQUEUE_THRESHOLD_DAYS = 30 / (24 * 60) -- 30 minutes in days
 
 --- Answer the current card with a rating.
 --- Schedules via FSRS, records review in session and store, updates card state,
---- and re-queues if the card is still in learning/relearning with a short interval.
+--- and re-queues only if the card is still in learning/relearning and already due.
 --- @param rating number 0 (Wrong/false) or 1 (Correct/true)
 --- @param elapsed_ms number|nil time spent on this card in milliseconds
 function Session:answer(rating, elapsed_ms)
@@ -260,10 +262,14 @@ function Session:answer(rating, elapsed_ms)
   -- Update card state in store
   self.store:update_card_state(card.id, new_state)
 
-  -- Re-queue if card is still in learning/relearning with short interval
+  -- Re-queue only if the card is already due. Most learning steps have a
+  -- future due_date (e.g. 10m/1h); showing them before that time defeats the
+  -- spacing interval and caused immediate same-session repeats.
   local final_status = new_state.status
+  local due_at = new_state.due_date or utils.add_days(now, intervals.days)
   if (final_status == "learning" or final_status == "relearning")
-    and intervals.days <= REQUEUE_THRESHOLD_DAYS then
+    and intervals.days <= REQUEUE_THRESHOLD_DAYS
+    and due_at <= now then
     -- Space re-queued cards out like Anki: at least a few cards before seeing again
     local remaining = #self.queue - self.current_idx
     local spacing = math.max(2, math.min(8, math.floor(remaining * 0.5)))

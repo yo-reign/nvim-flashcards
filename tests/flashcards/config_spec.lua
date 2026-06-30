@@ -15,6 +15,7 @@ describe("config", function()
       assert.equals("json", config.options.storage)
       assert.equals(0.85, config.options.fsrs.target_correctness)
       assert.equals(365, config.options.fsrs.maximum_interval)
+      assert.equals(3, config.options.fsrs.graduating_interval_days)
       assert.equals(20, config.options.session.new_cards_per_day)
       assert.equals(0.7, config.options.ui.width)
       assert.equals(0.6, config.options.ui.height)
@@ -40,6 +41,7 @@ describe("config", function()
       assert.equals(10, config.options.session.new_cards_per_day)
       -- Non-overridden defaults preserved
       assert.equals(365, config.options.fsrs.maximum_interval)
+      assert.equals(3, config.options.fsrs.graduating_interval_days)
       assert.is_true(config.options.fsrs.enable_fuzz)
       assert.equals("json", config.options.storage)
       assert.same({ "*.md", "*.markdown" }, config.options.file_patterns)
@@ -99,6 +101,26 @@ describe("config", function()
       local ok, err = config.validate()
       assert.is_false(ok)
       assert.truthy(err:find("target_correctness"))
+    end)
+
+    it("accepts false to disable graduation interval cap", function()
+      config.setup({
+        directories = { "/tmp/test-notes" },
+        fsrs = { graduating_interval_days = false },
+      })
+      local ok, err = config.validate()
+      assert.is_true(ok)
+      assert.is_nil(err)
+    end)
+
+    it("returns false for invalid graduation interval cap", function()
+      config.setup({
+        directories = { "/tmp/test-notes" },
+        fsrs = { graduating_interval_days = 0 },
+      })
+      local ok, err = config.validate()
+      assert.is_false(ok)
+      assert.truthy(err:find("graduating_interval_days"))
     end)
   end)
 

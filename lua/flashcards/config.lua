@@ -18,6 +18,8 @@ M.defaults = {
     target_correctness = 0.85,
     maximum_interval = 365,
     enable_fuzz = true,
+    -- Cap first review interval after learning; false disables.
+    graduating_interval_days = 3,
     weights = {
       initial_stability_correct = 3.0,
       initial_stability_wrong = 0.5,
@@ -178,6 +180,16 @@ function M.validate()
   if tc then
     if type(tc) ~= "number" or tc < 0.7 or tc > 0.97 then
       return false, "fsrs.target_correctness must be a number between 0.7 and 0.97, got: " .. tostring(tc)
+    end
+  end
+
+  -- graduating_interval_days caps the first review interval after learning.
+  -- Use false to disable the cap for users who want the old behavior.
+  local grad = opts.fsrs and opts.fsrs.graduating_interval_days
+  if grad ~= nil and grad ~= false then
+    if type(grad) ~= "number" or grad <= 0 then
+      return false,
+        "fsrs.graduating_interval_days must be a positive number or false, got: " .. tostring(grad)
     end
   end
 

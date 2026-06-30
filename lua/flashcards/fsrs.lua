@@ -49,12 +49,14 @@ M.DEFAULT_WEIGHTS = {
 --- @field target_correctness number Target correctness rate (e.g., 0.85 for 85%)
 --- @field maximum_interval number Maximum interval in days
 --- @field enable_fuzz boolean Whether to fuzz intervals
+--- @field graduating_interval_days number|false Maximum first review interval after learning graduation
 local FSRS = {}
 FSRS.__index = FSRS
 
 --- Create a new FSRS scheduler instance.
 --- All settings are passed directly via opts (no config module dependency).
---- @param opts table|nil Options: target_correctness, maximum_interval, enable_fuzz, weights
+--- @param opts table|nil Options: target_correctness, maximum_interval,
+--- enable_fuzz, graduating_interval_days, weights
 --- @return FSRS
 function M.new(opts)
     opts = opts or {}
@@ -63,6 +65,10 @@ function M.new(opts)
     self.target_correctness = opts.target_correctness or 0.85
     self.maximum_interval = opts.maximum_interval or 365
     self.enable_fuzz = opts.enable_fuzz ~= false
+    self.graduating_interval_days = opts.graduating_interval_days
+    if self.graduating_interval_days == nil then
+        self.graduating_interval_days = 3
+    end
     return self
 end
 
@@ -196,14 +202,28 @@ function FSRS:learning_interval(step)
     return steps[step_idx] / (24 * 60) -- Convert minutes to days
 end
 
+--- Cap the first review interval after a new card graduates from learning.
+--- Set graduating_interval_days=false to disable this conservative cap.
+--- @param interval number Interval in days
+--- @return number Capped interval in days
+function FSRS:cap_graduating_interval(interval)
+    local cap = self.graduating_interval_days
+    if type(cap) == "number" and cap > 0 then
+        return math.min(interval, cap)
+    end
+    return interval
+end
+
 --- Schedule next review for a card.
 --- @param card_state table Current card state
 --- @param rating integer Rating (0=Wrong, 1=Correct)
 --- @param now integer|nil Current timestamp
+--- @param opts table|nil Internal options: { disable_fuzz = true }
 --- @return table new_state New card state
 --- @return table intervals Scheduling info with days and formatted fields
-function FSRS:schedule(card_state, rating, now)
+function FSRS:schedule(card_state, rating, now, opts)
     now = now or utils.now()
+    opts = opts or {}
 
     local state = card_state.status or card_state.state or M.State.New
     local stability = card_state.stability or 0
@@ -225,6 +245,7 @@ function FSRS:schedule(card_state, rating, now)
     -- New state calculation
     local new_state = {}
     local intervals = {}
+    local used_graduation_cap = false
 
     if state == M.State.New then
         -- First review of a new card
@@ -266,6 +287,11 @@ function FSRS:schedule(card_state, rating, now)
                 new_state.learning_step = 0
                 new_state.lapses = lapses
                 intervals.days = self:next_interval(new_state.stability)
+                if state == M.State.Learning then
+                    local capped_days = self:cap_graduating_interval(intervals.days)
+                    used_graduation_cap = capped_days ~= intervals.days
+                    intervals.days = capped_days
+                end
             else
                 -- Continue learning
                 new_state.status = state
@@ -307,8 +333,12 @@ function FSRS:schedule(card_state, rating, now)
         end
     end
 
-    -- Apply fuzz if in review state with interval >= 1 day
-    if new_state.status == M.State.Review and intervals.days >= 1 then
+    -- Apply fuzz if in review state with interval >= 1 day.
+    -- Previews disable fuzz so the UI does not show random changing intervals.
+    if not opts.disable_fuzz
+        and not used_graduation_cap
+        and new_state.status == M.State.Review
+        and intervals.days >= 1 then
         intervals.days = self:fuzz_interval(intervals.days)
     end
 
@@ -332,7 +362,7 @@ function FSRS:preview_intervals(card_state, now)
     local previews = {}
 
     for rating = M.Rating.Wrong, M.Rating.Correct do
-        local _, intervals = self:schedule(card_state, rating, now)
+        local _, intervals = self:schedule(card_state, rating, now, { disable_fuzz = true })
         previews[rating] = intervals
     end
 

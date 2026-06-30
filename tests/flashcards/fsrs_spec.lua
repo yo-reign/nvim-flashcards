@@ -51,6 +51,7 @@ describe("fsrs", function()
             assert.equals(0.85, scheduler.target_correctness)
             assert.equals(365, scheduler.maximum_interval)
             assert.is_true(scheduler.enable_fuzz)
+            assert.equals(3, scheduler.graduating_interval_days)
         end)
 
         it("should accept custom parameters", function()
@@ -59,11 +60,13 @@ describe("fsrs", function()
                 target_correctness = 0.9,
                 maximum_interval = 180,
                 enable_fuzz = false,
+                graduating_interval_days = false,
             })
 
             assert.equals(0.9, scheduler.target_correctness)
             assert.equals(180, scheduler.maximum_interval)
             assert.is_false(scheduler.enable_fuzz)
+            assert.is_false(scheduler.graduating_interval_days)
         end)
 
         it("should merge custom weights with defaults", function()
@@ -271,6 +274,91 @@ describe("fsrs", function()
             assert.is_true(intervals.days >= 1) -- Review interval
         end)
 
+        it("should cap first graduation interval for new learning cards", function()
+            local fsrs = require("flashcards.fsrs")
+            local scheduler = fsrs.new({ enable_fuzz = false, graduating_interval_days = 3 })
+
+            local card_state = {
+                state = "learning",
+                stability = 3.0,
+                difficulty = 5.0,
+                learning_step = 2,
+                reps = 3,
+                lapses = 0,
+            }
+
+            local new_state, intervals = scheduler:schedule(card_state, fsrs.Rating.Correct)
+
+            assert.equals("review", new_state.status)
+            assert.equals(3, intervals.days)
+            assert.equals(3, new_state.scheduled_days)
+        end)
+
+        it("should not fuzz capped first graduation intervals", function()
+            local fsrs = require("flashcards.fsrs")
+            local scheduler = fsrs.new({ enable_fuzz = true, graduating_interval_days = 3 })
+            local fuzz_called = false
+            scheduler.fuzz_interval = function(_, interval)
+                fuzz_called = true
+                return interval + 99
+            end
+
+            local card_state = {
+                state = "learning",
+                stability = 3.0,
+                difficulty = 5.0,
+                learning_step = 2,
+                reps = 3,
+                lapses = 0,
+            }
+
+            local _, intervals = scheduler:schedule(card_state, fsrs.Rating.Correct)
+
+            assert.is_false(fuzz_called)
+            assert.equals(3, intervals.days)
+        end)
+
+        it("should allow disabling the first graduation cap", function()
+            local fsrs = require("flashcards.fsrs")
+            local scheduler = fsrs.new({
+                target_correctness = 0.85,
+                enable_fuzz = false,
+                graduating_interval_days = false,
+            })
+
+            local card_state = {
+                state = "learning",
+                stability = 3.0,
+                difficulty = 5.0,
+                learning_step = 2,
+                reps = 3,
+                lapses = 0,
+            }
+
+            local _, intervals = scheduler:schedule(card_state, fsrs.Rating.Correct)
+
+            assert.is_true(intervals.days > 3)
+        end)
+
+        it("should not cap relearning graduation for mature review cards", function()
+            local fsrs = require("flashcards.fsrs")
+            local scheduler = fsrs.new({ enable_fuzz = false, graduating_interval_days = 3 })
+
+            local card_state = {
+                state = "relearning",
+                stability = 30.0,
+                difficulty = 5.0,
+                learning_step = 2,
+                reps = 10,
+                lapses = 1,
+            }
+
+            local new_state, intervals = scheduler:schedule(card_state, fsrs.Rating.Correct)
+
+            assert.equals("review", new_state.status)
+            assert.is_true(intervals.days > 3)
+        end)
+
         it("should reset to first step on wrong", function()
             local fsrs = require("flashcards.fsrs")
             local scheduler = fsrs.new({ enable_fuzz = false })
@@ -407,6 +495,30 @@ describe("fsrs", function()
             local previews = scheduler:preview_intervals(card_state)
 
             assert.is_true(previews[fsrs.Rating.Wrong].days < previews[fsrs.Rating.Correct].days)
+        end)
+
+        it("should not apply fuzz while previewing intervals", function()
+            local fsrs = require("flashcards.fsrs")
+            local scheduler = fsrs.new({ enable_fuzz = true })
+            local fuzz_called = false
+            scheduler.fuzz_interval = function(_, interval)
+                fuzz_called = true
+                return interval + 99
+            end
+
+            local card_state = {
+                state = "review",
+                stability = 10.0,
+                difficulty = 5.0,
+                last_review = mock_utils.now() - 86400 * 5,
+                reps = 5,
+                lapses = 0,
+            }
+
+            local previews = scheduler:preview_intervals(card_state)
+
+            assert.is_false(fuzz_called)
+            assert.is_true(previews[fsrs.Rating.Correct].days < 99)
         end)
     end)
 

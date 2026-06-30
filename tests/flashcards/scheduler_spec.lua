@@ -373,7 +373,7 @@ describe("scheduler", function()
       assert.equals(1, #session.reviews)
     end)
 
-    it("re-queues learning cards due within 30 minutes", function()
+    it("does not re-queue future-due learning cards immediately", function()
       local now = utils.now()
       local cards = {
         { id = "card1", front = "Q", back = "A", tags = {}, reversible = false },
@@ -384,25 +384,75 @@ describe("scheduler", function()
       }
 
       local store = make_mock_store(cards, states)
-      -- Custom FSRS that returns learning state with short interval on wrong
-      local fsrs = make_mock_fsrs()
+      local fsrs = {}
+      function fsrs:schedule(card_state, rating, schedule_now)
+        local days = 10 / (24 * 60)
+        local new_state = deep_copy(card_state)
+        new_state.status = "learning"
+        new_state.reps = (card_state.reps or 0) + 1
+        new_state.learning_step = 1
+        new_state.scheduled_days = days
+        new_state.due_date = mock_utils.add_days(schedule_now or now, days)
+        new_state.last_review = schedule_now or now
+        return new_state, { days = days, formatted = "10m" }
+      end
 
       local session = scheduler.new_session(store, fsrs)
       session:load_cards()
       session:next_card()
 
-      -- Answer wrong -> should go to learning with 1 minute interval
-      session:answer(0)
+      local initial_queue_len = #session.queue
+      session:answer(1)
 
-      -- Card should be re-queued (since learning with < 30 min interval)
-      local found = false
+      local count = 0
       for _, c in ipairs(session.queue) do
         if c.id == "card1" then
-          found = true
-          break
+          count = count + 1
         end
       end
-      assert.is_true(found, "learning card should be re-queued")
+
+      assert.equals(initial_queue_len, #session.queue)
+      assert.equals(1, count, "future-due learning card should not get an extra queue copy")
+      assert.is_true(store:get_card_state("card1").due_date > now)
+    end)
+
+    it("still re-queues learning cards that are already due", function()
+      local now = utils.now()
+      local cards = {
+        { id = "card1", front = "Q", back = "A", tags = {}, reversible = false },
+      }
+      local states = {
+        card1 = { status = "new", stability = 0, difficulty = 0, reps = 0, lapses = 0,
+                   learning_step = 0, elapsed_days = 0, scheduled_days = 0 },
+      }
+
+      local store = make_mock_store(cards, states)
+      local fsrs = {}
+      function fsrs:schedule(card_state, rating, schedule_now)
+        local new_state = deep_copy(card_state)
+        new_state.status = "learning"
+        new_state.reps = (card_state.reps or 0) + 1
+        new_state.learning_step = 1
+        new_state.scheduled_days = 0
+        new_state.due_date = schedule_now or now
+        new_state.last_review = schedule_now or now
+        return new_state, { days = 0, formatted = "< 1m" }
+      end
+
+      local session = scheduler.new_session(store, fsrs)
+      session:load_cards()
+      session:next_card()
+
+      session:answer(1)
+
+      local count = 0
+      for _, c in ipairs(session.queue) do
+        if c.id == "card1" then
+          count = count + 1
+        end
+      end
+
+      assert.equals(2, count, "already-due learning card should get one extra queue copy")
     end)
   end)
 
