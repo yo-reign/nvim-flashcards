@@ -10,7 +10,7 @@ local utils = require("flashcards.utils")
 
 M.defaults = {
   directories = {},
-  storage = "json", -- "json" or "sqlite"
+  storage = "sqlite", -- SQLite is the only supported backend
   db_path = nil, -- directory or file path; nil = first directory
   file_patterns = { "*.md", "*.markdown" },
   ignore_patterns = { "node_modules", ".git", ".obsidian", ".trash" },
@@ -111,15 +111,16 @@ end
 --- Logic:
 ---   - If db_path is nil, use the first directory from `directories`
 ---   - If db_path ends with "/" or is an existing directory, append the
----     appropriate filename (`flashcards.json` or `flashcards.db`)
+---     database filename (`flashcards.db`)
+---   - If db_path is an old `.json` file path, transparently use the same
+---     path with `.db` so a sibling legacy JSON file can be migrated once
 ---   - Otherwise use db_path as-is
 ---   - Always normalizes the result via utils.normalize_path
 ---
 --- @return string resolved file path
 function M.get_storage_path()
   local opts = M.options
-  local storage_type = opts.storage
-  local filename = storage_type == "sqlite" and "flashcards.db" or "flashcards.json"
+  local filename = "flashcards.db"
 
   local normalized_path = opts.db_path
   local from_directory = normalized_path == nil
@@ -149,6 +150,10 @@ function M.get_storage_path()
     return utils.normalize_path(base .. "/" .. filename)
   end
 
+  if base:sub(-5) == ".json" then
+    return utils.normalize_path(base:sub(1, -6) .. ".db")
+  end
+
   return base
 end
 
@@ -170,9 +175,10 @@ function M.validate()
     return false, "directories must not be empty"
   end
 
-  -- storage must be "json" or "sqlite"
-  if opts.storage ~= "json" and opts.storage ~= "sqlite" then
-    return false, "storage must be \"json\" or \"sqlite\", got: " .. tostring(opts.storage)
+  -- SQLite is the only supported storage backend. JSON was removed because
+  -- whole-file persistence is too easy to corrupt and lose review history.
+  if opts.storage ~= "sqlite" then
+    return false, "storage must be \"sqlite\"; JSON storage is no longer supported, got: " .. tostring(opts.storage)
   end
 
   -- target_correctness must be in [0.7, 0.97]

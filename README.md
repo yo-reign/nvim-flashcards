@@ -15,7 +15,7 @@ A Neovim plugin for markdown-based spaced repetition flashcards using a simplifi
 - **Source refs** - Leading section prefixes like `(1.2.3:5)` render as review footnotes
 - **Telescope integration** - Browse, search, and filter cards
 - **Orphan management** - Soft-delete lost cards, reactivate or purge them
-- **JSON storage** - Human-readable data file you can manually inspect and edit
+- **SQLite storage** - ACID transactions, WAL journaling, foreign keys, and integrity checks for durable review history
 - **Auto-sync** - Cards update on file save
 
 ## Requirements
@@ -25,6 +25,7 @@ A Neovim plugin for markdown-based spaced repetition flashcards using a simplifi
 - [nui.nvim](https://github.com/MunifTanjim/nui.nvim)
 - [telescope.nvim](https://github.com/nvim-telescope/telescope.nvim)
 - [nvim-treesitter](https://github.com/nvim-treesitter/nvim-treesitter) (optional, for syntax highlighting in review window)
+- SQLite runtime library (`libsqlite3`; available by default on macOS and most Linux distributions)
 
 ## Installation
 
@@ -41,7 +42,8 @@ A Neovim plugin for markdown-based spaced repetition flashcards using a simplifi
     config = function()
         require("flashcards").setup({
             directories = { "~/notes/flashcards/" },
-            storage = "json",
+            -- SQLite is the only supported backend.
+            storage = "sqlite",
             db_path = "~/notes/assets/",
             fsrs = {
                 target_correctness = 0.85,
@@ -259,13 +261,14 @@ require("flashcards").setup({
     -- Directories to scan for cards
     directories = { "~/notes/flashcards/" },
 
-    -- Storage backend: "json" (default)
-    -- SQLite backend planned for future release
-    storage = "json",
+    -- Storage backend: SQLite only (default)
+    -- JSON storage has been removed to protect review history from
+    -- whole-file corruption/truncation failures.
+    storage = "sqlite",
 
-    -- Where to store the data file
-    -- Directory path: appends "flashcards.json" automatically
-    -- File path: used as-is
+    -- Where to store the database
+    -- Directory path: appends "flashcards.db" automatically
+    -- File path: used as-is (old .json paths are rewritten to .db)
     -- nil: uses first configured directory
     db_path = "~/notes/assets/",
 
@@ -329,9 +332,11 @@ Cards are identified by unique IDs stored as markdown comments (`<!-- fc:abc1234
 
 ### Storage
 
-Card state is stored in a human-readable JSON file (`flashcards.json`). You can inspect and manually edit it. The file location is controlled by `db_path` in your config.
+Card state is stored in a SQLite database (`flashcards.db`). The backend uses WAL journaling, `synchronous=FULL`, foreign keys, per-operation transactions, and startup integrity checks so review history is committed durably instead of rewriting one fragile JSON file.
 
-A SQLite backend is planned for a future release, which will offer better performance for large collections (thousands of cards).
+The database location is controlled by `db_path` in your config. If `db_path` is a directory, `flashcards.db` is created inside it.
+
+**Upgrade from JSON:** remove `storage = "json"` from your config or change it to `"sqlite"`. On first open, if the new empty database has a sibling legacy JSON file (for example `flashcards.json` next to `flashcards.db`), nvim-flashcards imports readable cards and reviews once and leaves the JSON file untouched as a backup. If the JSON file is malformed, startup fails loudly instead of silently creating an empty history.
 
 ### Orphan Management
 

@@ -29,7 +29,7 @@ nvim-flashcards/
 │       ├── scheduler.lua         # Review scheduling/session logic
 │       ├── storage/
 │       │   ├── init.lua          # Storage factory
-│       │   └── json.lua          # JSON storage backend
+│       │   └── sqlite.lua        # SQLite storage backend
 │       ├── ui/
 │       │   ├── review.lua        # Review session floating window
 │       │   ├── stats.lua         # Statistics panel
@@ -53,13 +53,14 @@ nvim-flashcards/
 | `MunifTanjim/nui.nvim` | Floating review/stats UI | Yes |
 | `nvim-telescope/telescope.nvim` | Browse/search/tag pickers | Yes |
 | `nvim-treesitter/nvim-treesitter` | Markdown + code block highlighting in UI | Recommended |
-| `kkharji/sqlite.lua` | Optional future/alternate SQLite backend | No |
+| `libsqlite3` | Durable SQL persistence via LuaJIT FFI | Yes |
 
 ## Card Syntax
 
 ### Card IDs
 
 Cards are identified by unique IDs stored as markdown comments. IDs are auto-generated when scanning:
+
 - Inline: `front ::: back #tags <!-- fc:abc12345 -->`
 - Fenced: `:::card <!-- fc:abc12345 -->`
 
@@ -103,9 +104,11 @@ def reverse(s):
         return s
     return reverse(s[1:]) + s[0]
 ```
+
 :-:
 It reverses a string using recursion.
 :::end #python #recursion
+
 ```
 
 Tags go on the `:::end` closing line.
@@ -223,70 +226,38 @@ end
 
 ## Storage Schema
 
-Current implementation uses JSON storage by default (`lua/flashcards/storage/json.lua`).
+Current implementation uses SQLite only (`lua/flashcards/storage/sqlite.lua`). JSON storage was removed because whole-file rewrites are too fragile for review history.
 
-```json
-{
-  "schema_version": 2,
-  "cards": {
-    "abc12345": {
-      "file_path": "math/algebra.md",
-      "line": 12,
-      "front": "Question",
-      "back": "Answer",
-      "reversible": false,
-      "suspended": false,
-      "active": true,
-      "tags": ["math", "math/algebra"],
-      "note": "optional source note",
-      "state": {
-        "status": "new",
-        "stability": 0,
-        "difficulty": 0,
-        "due_date": null,
-        "last_review": null,
-        "reps": 0,
-        "lapses": 0,
-        "learning_step": 0,
-        "elapsed_days": 0,
-        "scheduled_days": 0
-      },
-      "created_at": 0,
-      "updated_at": 0,
-      "lost_at": null
-    }
-  },
-  "reviews": [
-    {
-      "card_id": "abc12345",
-      "rating": 0,
-      "reviewed_at": 1710000000,
-      "elapsed_ms": 3200,
-      "state_before": "review",
-      "state_after": "relearning"
-    },
-    {
-      "card_id": "abc12345",
-      "rating": 1,
-      "reviewed_at": 1710086400,
-      "elapsed_ms": 2100,
-      "state_before": "relearning",
-      "state_after": "review"
-    }
-  ],
-  "daily_stats": {
-    "2026-04-12": {
-      "new_count": 3,
-      "review_count": 12
-    }
-  }
-}
+Core tables:
+
+```sql
+meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+cards(id TEXT PRIMARY KEY, file_path TEXT NOT NULL, line INTEGER NOT NULL,
+      front TEXT NOT NULL, back TEXT NOT NULL, reversible INTEGER NOT NULL,
+      suspended INTEGER NOT NULL, active INTEGER NOT NULL, note TEXT,
+      created_at REAL NOT NULL, updated_at REAL NOT NULL, lost_at REAL);
+card_states(card_id TEXT PRIMARY KEY REFERENCES cards(id) ON DELETE CASCADE,
+            status TEXT NOT NULL, stability REAL NOT NULL, difficulty REAL NOT NULL,
+            due_date REAL, last_review REAL, reps INTEGER NOT NULL,
+            lapses INTEGER NOT NULL, learning_step INTEGER NOT NULL,
+            elapsed_days REAL NOT NULL, scheduled_days REAL NOT NULL);
+card_tags(card_id TEXT NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+          tag TEXT NOT NULL, position INTEGER NOT NULL,
+          PRIMARY KEY(card_id, tag));
+reviews(id INTEGER PRIMARY KEY AUTOINCREMENT,
+        card_id TEXT NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+        rating INTEGER NOT NULL CHECK(rating IN (0, 1)),
+        reviewed_at REAL NOT NULL, elapsed_ms INTEGER NOT NULL,
+        state_before TEXT, state_after TEXT);
+daily_stats(date TEXT PRIMARY KEY, new_count INTEGER NOT NULL, review_count INTEGER NOT NULL);
 ```
 
 Notes:
-- `rating` now uses `0=Wrong`, `1=Correct`
-- Legacy saved review logs with `1/2` are migrated to `0/1` on load
-- JSON backend is current source of truth; SQLite remains optional/future work
+
+- `rating` uses `0=Wrong`, `1=Correct` and is enforced with a SQL `CHECK` constraint.
+- Backend enables WAL journaling, `synchronous=FULL`, foreign keys, busy timeout, per-operation transactions, and startup `quick_check`/`foreign_key_check`.
+- Review answer persistence updates the review log and card state in one transaction.
+- First SQLite open can one-time import a sibling legacy JSON file into an empty database; malformed legacy JSON fails loudly instead of creating empty history.
 
 ## UI Design
 
@@ -438,12 +409,12 @@ require("flashcards").setup({
         "~/notes",
     },
 
-    -- Storage backend
-    storage = "json",
+    -- Storage backend (SQLite only)
+    storage = "sqlite",
 
-    -- Storage path: directory or full file path
+    -- Storage path: directory or full database file path
     db_path = "~/notes/assets/",
-    -- db_path = "~/.local/share/nvim/flashcards.json",
+    -- db_path = "~/.local/share/nvim/flashcards.db",
 
     -- FSRS parameters with binary rating
     fsrs = {
@@ -487,13 +458,15 @@ require("flashcards").setup({
 ## Implementation Plan
 
 ### Phase 1: Core Foundation ✅
+
 1. [x] Project structure setup
 2. [x] Configuration module (`config.lua`)
-3. [x] JSON storage backend + storage factory (`storage/json.lua`, `storage/init.lua`)
+3. [x] SQLite storage backend + storage factory (`storage/sqlite.lua`, `storage/init.lua`)
 4. [x] Markdown parser for card extraction (`parser.lua`)
 5. [x] FSRS algorithm with binary rating (`fsrs.lua`)
 
 ### Phase 2: Basic Functionality ✅
+
 1. [x] Card scanner (recursive directory walking)
 2. [x] Card CRUD operations
 3. [x] Tag parsing and hierarchy
@@ -501,6 +474,7 @@ require("flashcards").setup({
 5. [x] Basic commands (`:FlashcardsReview`, `:FlashcardsScan`)
 
 ### Phase 3: User Interface ✅
+
 1. [x] Review floating window with nui.nvim
 2. [x] Markdown rendering with treesitter
 3. [x] Code block syntax highlighting
@@ -508,6 +482,7 @@ require("flashcards").setup({
 5. [x] Keyboard navigation (binary: 0=Wrong, 1=Correct)
 
 ### Phase 4: Telescope Integration ✅
+
 1. [x] Due cards picker
 2. [x] Browse all cards picker
 3. [x] Tag hierarchy picker
@@ -515,6 +490,7 @@ require("flashcards").setup({
 5. [x] Card preview
 
 ### Phase 5: Polish
+
 1. [x] Statistics dashboard
 2. [x] Binary rating system (simplified from 4-point)
 3. [x] Adjustable target correctness
@@ -542,6 +518,7 @@ end)
 ```
 
 Notes:
+
 - Keep `conceallevel = 0` in review popup by default
 - Preserve markdown + fenced code highlighting
 - Avoid crash path from markdown conceal provider during redraws
@@ -574,6 +551,7 @@ end
 ```
 
 When scanning:
+
 1. If card has an existing `<!-- fc:id -->` comment, use that ID
 2. If no ID exists, generate a new one and write it to the source file
 3. IDs persist through content edits, preserving review history
@@ -581,9 +559,10 @@ When scanning:
 ### Handling Card Updates
 
 When scanning, compare new cards against existing:
+
 1. **Same ID exists**: Update content if changed (preserves review state)
 2. **New card**: Insert with "new" state, write ID to source file
-3. **Card missing**: Delete from database
+3. **Card missing**: Mark inactive/lost in database while preserving review history
 
 ### Performance Considerations
 
@@ -639,5 +618,5 @@ Run tests with: `nvim --headless -c "PlenaryBustedDirectory tests/"`
 - [FSRS Algorithm](https://github.com/open-spaced-repetition/fsrs4anki)
 - [nui.nvim Documentation](https://github.com/MunifTanjim/nui.nvim)
 - [telescope.nvim Developer Guide](https://github.com/nvim-telescope/telescope.nvim/blob/master/developers.md)
-- [sqlite.lua](https://github.com/kkharji/sqlite.lua)
+- [SQLite](https://www.sqlite.org/index.html)
 - [Neovim Plugin Best Practices](https://github.com/nvim-neorocks/nvim-best-practices)

@@ -96,7 +96,20 @@ describe("scheduler", function()
     end
 
     function store:add_review(review)
-      table.insert(self._reviews, deep_copy(review))
+      local persisted = deep_copy(review)
+      persisted.id = #self._reviews + 1
+      table.insert(self._reviews, persisted)
+      return persisted.id
+    end
+
+    function store:remove_review(review_id, card_id)
+      for i, review in ipairs(self._reviews) do
+        if review.id == review_id and (not card_id or review.card_id == card_id) then
+          table.remove(self._reviews, i)
+          return true
+        end
+      end
+      return false
     end
 
     function store:remove_last_review()
@@ -496,8 +509,9 @@ describe("scheduler", function()
       -- Session reviews should be empty
       assert.equals(0, #session.reviews)
 
-      -- Store reviews should be empty (the add was undone)
-      -- Note: we only verify session-level undo; store-level depends on implementation
+      -- Store reviews should be empty (the add was undone by persisted review id)
+      assert.equals(0, #store._reviews)
+
       -- The current card should be accessible again
       local card, is_reversed_after = session:current_card()
       assert.is_not_nil(card)

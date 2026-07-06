@@ -26,9 +26,15 @@ describe("scanner", function()
     return path
   end
 
+  local function remove_db_files(path)
+    os.remove(path)
+    os.remove(path .. "-wal")
+    os.remove(path .. "-shm")
+  end
+
   before_each(function()
-    store_path = os.tmpname() .. ".json"
-    store = Storage.new("json", store_path)
+    store_path = os.tmpname() .. ".db"
+    store = Storage.new("sqlite", store_path)
     store:init()
   end)
 
@@ -36,7 +42,7 @@ describe("scanner", function()
     if store then
       pcall(function() store:close() end)
     end
-    os.remove(store_path)
+    remove_db_files(store_path)
   end)
 
   -- ==========================================================================

@@ -12,7 +12,7 @@ describe("config", function()
       config.setup()
       assert.is_not_nil(config.options)
       assert.same({}, config.options.directories)
-      assert.equals("json", config.options.storage)
+      assert.equals("sqlite", config.options.storage)
       assert.equals(0.85, config.options.fsrs.target_correctness)
       assert.equals(365, config.options.fsrs.maximum_interval)
       assert.equals(3, config.options.fsrs.graduating_interval_days)
@@ -43,7 +43,7 @@ describe("config", function()
       assert.equals(365, config.options.fsrs.maximum_interval)
       assert.equals(3, config.options.fsrs.graduating_interval_days)
       assert.is_true(config.options.fsrs.enable_fuzz)
-      assert.equals("json", config.options.storage)
+      assert.equals("sqlite", config.options.storage)
       assert.same({ "*.md", "*.markdown" }, config.options.file_patterns)
     end)
 
@@ -84,6 +84,13 @@ describe("config", function()
       local ok, err = config.validate()
       assert.is_false(ok)
       assert.truthy(err:find("setup"))
+    end)
+
+    it("returns false for json storage", function()
+      config.setup({ directories = { "/tmp/test-notes" }, storage = "json" })
+      local ok, err = config.validate()
+      assert.is_false(ok)
+      assert.truthy(err:find("JSON storage is no longer supported"))
     end)
 
     it("returns false for invalid storage type", function()
@@ -144,22 +151,31 @@ describe("config", function()
   end)
 
   describe("get_storage_path", function()
-    it("appends json filename when db_path is a directory", function()
+    it("appends sqlite filename when db_path is a directory", function()
       config.setup({
         directories = { "/tmp/notes" },
         db_path = "/tmp/custom-db/",
       })
       local path = config.get_storage_path()
-      assert.equals("/tmp/custom-db/flashcards.json", path)
+      assert.equals("/tmp/custom-db/flashcards.db", path)
     end)
 
     it("uses db_path as-is when it is a file path", function()
       config.setup({
         directories = { "/tmp/notes" },
+        db_path = "/tmp/my-data.db",
+      })
+      local path = config.get_storage_path()
+      assert.equals("/tmp/my-data.db", path)
+    end)
+
+    it("rewrites old json file paths to sqlite db paths", function()
+      config.setup({
+        directories = { "/tmp/notes" },
         db_path = "/tmp/my-data.json",
       })
       local path = config.get_storage_path()
-      assert.equals("/tmp/my-data.json", path)
+      assert.equals("/tmp/my-data.db", path)
     end)
 
     it("uses first directory when db_path is nil", function()
@@ -167,7 +183,7 @@ describe("config", function()
         directories = { "/tmp/notes" },
       })
       local path = config.get_storage_path()
-      assert.equals("/tmp/notes/flashcards.json", path)
+      assert.equals("/tmp/notes/flashcards.db", path)
     end)
 
     it("appends sqlite filename when storage is sqlite", function()

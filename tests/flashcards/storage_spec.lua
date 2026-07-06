@@ -4,10 +4,19 @@ describe("storage", function()
   local store
   local tmp_path
 
+  local function remove_db_files(path)
+    os.remove(path)
+    os.remove(path .. "-wal")
+    os.remove(path .. "-shm")
+    if path:sub(-3) == ".db" then
+      os.remove(path:sub(1, -4) .. ".json")
+    end
+  end
+
   before_each(function()
     -- Create a unique temp file for each test
-    tmp_path = os.tmpname() .. ".json"
-    store = Storage.new("json", tmp_path)
+    tmp_path = os.tmpname() .. ".db"
+    store = Storage.new("sqlite", tmp_path)
     store:init()
   end)
 
@@ -15,7 +24,7 @@ describe("storage", function()
     if store then
       pcall(function() store:close() end)
     end
-    os.remove(tmp_path)
+    remove_db_files(tmp_path)
   end)
 
   -- ==========================================================================
@@ -23,10 +32,16 @@ describe("storage", function()
   -- ==========================================================================
 
   describe("factory", function()
-    it("creates json backend", function()
-      local s = Storage.new("json", tmp_path)
+    it("creates sqlite backend", function()
+      local s = Storage.new("sqlite", tmp_path)
       assert.is_not_nil(s)
       assert.is_function(s.init)
+    end)
+
+    it("errors on json type", function()
+      assert.has_error(function()
+        Storage.new("json", tmp_path)
+      end)
     end)
 
     it("errors on unknown type", function()
@@ -952,7 +967,7 @@ describe("storage", function()
       })
 
       local now = utils.now()
-      store:add_review({
+      local first_id = store:add_review({
         card_id = "c1",
         rating = 1,
         reviewed_at = now,
@@ -960,7 +975,7 @@ describe("storage", function()
         state_before = "new",
         state_after = "learning",
       })
-      store:add_review({
+      local second_id = store:add_review({
         card_id = "c1",
         rating = 1,
         reviewed_at = now + 60,
@@ -968,6 +983,9 @@ describe("storage", function()
         state_before = "learning",
         state_after = "review",
       })
+      assert.is_number(first_id)
+      assert.is_number(second_id)
+      assert.truthy(second_id > first_id)
 
       local reviews = store:get_reviews("c1")
       assert.equals(2, #reviews)
@@ -1025,6 +1043,38 @@ describe("storage", function()
         end
       end
       assert.is_true(found)
+    end)
+
+    it("remove_review deletes the exact review id only", function()
+      store:upsert_card({ id = "c1", file_path = "a.md", line = 1, front = "Q1", back = "A1", tags = {} })
+      store:upsert_card({ id = "c2", file_path = "a.md", line = 2, front = "Q2", back = "A2", tags = {} })
+
+      local now = utils.now()
+      local first_id = store:add_review({
+        card_id = "c1",
+        rating = 1,
+        reviewed_at = now,
+        elapsed_ms = 1000,
+        state_before = "new",
+        state_after = "learning",
+      })
+      store:add_review({
+        card_id = "c2",
+        rating = 0,
+        reviewed_at = now + 60,
+        elapsed_ms = 2000,
+        state_before = "new",
+        state_after = "learning",
+      })
+
+      assert.is_false(store:remove_review(first_id, "c2"))
+      assert.is_true(store:remove_review(first_id, "c1"))
+      assert.same({}, store:get_reviews("c1"))
+      assert.equals(1, #store:get_reviews("c2"))
+
+      local today_stats = store:get_daily_stats(1)[1]
+      assert.equals(1, today_stats.new_count)
+      assert.equals(0, today_stats.review_count)
     end)
   end)
 
@@ -1157,7 +1207,7 @@ describe("storage", function()
       store:save()
 
       -- Create a brand new store from the same path
-      local store2 = Storage.new("json", tmp_path)
+      local store2 = Storage.new("sqlite", tmp_path)
       store2:init()
 
       local card = store2:get_card("persist1")
@@ -1177,27 +1227,55 @@ describe("storage", function()
       store2:close()
     end)
 
-    it("migrates legacy review ratings from 1/2 to 0/1 on load", function()
-      store:close()
-      store = nil
+    it("rejects non-binary review ratings", function()
+      store:upsert_card({
+        id = "c1",
+        file_path = "test.md",
+        line = 1,
+        front = "Q",
+        back = "A",
+        tags = {},
+      })
 
-      local ok = utils.write_file(tmp_path, vim.fn.json_encode({
-        cards = {},
-        reviews = {
-          { card_id = "c1", rating = 1, reviewed_at = utils.now(), elapsed_ms = 1000, state_before = "new", state_after = "learning" },
-          { card_id = "c1", rating = 2, reviewed_at = utils.now() + 60, elapsed_ms = 1200, state_before = "learning", state_after = "review" },
-        },
-        daily_stats = {},
-      }))
-      assert.is_true(ok)
+      assert.has_error(function()
+        store:add_review({
+          card_id = "c1",
+          rating = 2,
+          reviewed_at = utils.now(),
+          elapsed_ms = 1000,
+          state_before = "new",
+          state_after = "learning",
+        })
+      end)
+      assert.same({}, store:get_reviews("c1"))
+    end)
 
-      store = Storage.new("json", tmp_path)
-      store:init()
+    it("rolls back review insert when atomic state update fails", function()
+      store:upsert_card({
+        id = "c1",
+        file_path = "test.md",
+        line = 1,
+        front = "Q",
+        back = "A",
+        tags = {},
+      })
 
-      local reviews = store:get_reviews("c1")
-      assert.equals(2, #reviews)
-      assert.equals(0, reviews[1].rating)
-      assert.equals(1, reviews[2].rating)
+      assert.has_error(function()
+        store:add_review_and_update_state({
+          card_id = "c1",
+          rating = 1,
+          reviewed_at = utils.now(),
+          elapsed_ms = 1000,
+          state_before = "new",
+          state_after = "learning",
+        }, "c1", { status = "not-a-valid-state" })
+      end)
+
+      assert.same({}, store:get_reviews("c1"))
+      local today_stats = store:get_daily_stats(1)[1]
+      assert.equals(0, today_stats.new_count)
+      assert.equals(0, today_stats.review_count)
+      assert.equals("new", store:get_card_state("c1").status)
     end)
 
     it("close saves and clears data", function()
@@ -1218,7 +1296,7 @@ describe("storage", function()
       assert.truthy(#content > 10)
 
       -- Reload works
-      local store2 = Storage.new("json", tmp_path)
+      local store2 = Storage.new("sqlite", tmp_path)
       store2:init()
       local card = store2:get_card("c1")
       assert.is_not_nil(card)
@@ -1226,17 +1304,96 @@ describe("storage", function()
     end)
 
     it("init creates empty store if file does not exist", function()
-      local new_path = os.tmpname() .. "_new.json"
-      os.remove(new_path)
+      local new_path = os.tmpname() .. "_new.db"
+      remove_db_files(new_path)
 
-      local s = Storage.new("json", new_path)
+      local s = Storage.new("sqlite", new_path)
       s:init()
 
       local cards = s:get_all_cards()
       assert.same({}, cards)
 
       s:close()
-      os.remove(new_path)
+      remove_db_files(new_path)
+    end)
+
+    it("refuses to overwrite a non-sqlite database file", function()
+      store:close()
+      store = nil
+      local ok = utils.write_file(tmp_path, "this is not sqlite")
+      assert.is_true(ok)
+
+      local s = Storage.new("sqlite", tmp_path)
+      assert.has_error(function()
+        s:init()
+      end)
+      pcall(function() s:close() end)
+    end)
+
+    it("migrates a sibling legacy json store once", function()
+      store:close()
+      store = nil
+      remove_db_files(tmp_path)
+
+      local json_path = tmp_path:sub(1, -4) .. ".json"
+      local now = utils.now()
+      local ok = utils.write_file(json_path, vim.fn.json_encode({
+        schema_version = 1,
+        cards = {
+          legacy1 = {
+            file_path = "deck.md",
+            line = 7,
+            front = "Legacy Q",
+            back = "Legacy A",
+            reversible = true,
+            suspended = false,
+            active = true,
+            tags = { "legacy", "legacy/import" },
+            state = { status = "review", stability = 4.5, reps = 2 },
+            created_at = now - 100,
+            updated_at = now - 50,
+          },
+        },
+        reviews = {
+          { card_id = "legacy1", rating = 1, reviewed_at = now - 10, elapsed_ms = 1000, state_before = "new", state_after = "learning" },
+          { card_id = "legacy1", rating = 2, reviewed_at = now, elapsed_ms = 2000, state_before = "learning", state_after = "review" },
+        },
+      }))
+      assert.is_true(ok)
+
+      store = Storage.new("sqlite", tmp_path)
+      store:init()
+
+      local card = store:get_card("legacy1")
+      assert.is_not_nil(card)
+      assert.equals("Legacy Q", card.front)
+      assert.is_true(card.reversible)
+      assert.same({ "legacy", "legacy/import" }, card.tags)
+      assert.equals("review", card.state.status)
+      assert.equals(4.5, card.state.stability)
+      assert.equals(2, card.state.reps)
+
+      local reviews = store:get_reviews("legacy1")
+      assert.equals(2, #reviews)
+      assert.equals(0, reviews[1].rating)
+      assert.equals(1, reviews[2].rating)
+    end)
+
+    it("refuses empty db creation when legacy json is malformed", function()
+      store:close()
+      store = nil
+      remove_db_files(tmp_path)
+
+      local json_path = tmp_path:sub(1, -4) .. ".json"
+      local ok = utils.write_file(json_path, "{ definitely not json")
+      assert.is_true(ok)
+
+      store = Storage.new("sqlite", tmp_path)
+      assert.has_error(function()
+        store:init()
+      end)
+      pcall(function() store:close() end)
+      store = nil
     end)
 
     it("data survives close and reopen cycle", function()
@@ -1256,7 +1413,7 @@ describe("storage", function()
       store:close()
 
       -- Reopen
-      store = Storage.new("json", tmp_path)
+      store = Storage.new("sqlite", tmp_path)
       store:init()
 
       -- Verify data survived

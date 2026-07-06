@@ -187,12 +187,17 @@ function M.health()
     end
   end
 
-  -- Check optional dependencies
-  local sqlite_ok = pcall(require, "sqlite")
+  -- Check storage dependency
+  local sqlite_ok, sqlite_mod = pcall(require, "flashcards.storage.sqlite")
   if sqlite_ok then
-    ok("sqlite.lua installed (optional)")
+    local available, sqlite_err = sqlite_mod.is_available()
+    if available then
+      ok("SQLite library available")
+    else
+      error_fn("SQLite library not available: " .. tostring(sqlite_err))
+    end
   else
-    warn("sqlite.lua not installed (needed for SQLite storage backend)")
+    error_fn("SQLite storage backend failed to load: " .. tostring(sqlite_mod))
   end
 
   -- Check configuration state

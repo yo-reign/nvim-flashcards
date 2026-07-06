@@ -237,7 +237,8 @@ function Session:answer(rating, elapsed_ms)
   -- Determine if card was reversed
   local is_reversed = self.reversed_map[card.id] or false
 
-  -- Record review in session
+  -- Prepare the in-memory session review, but only append it after durable
+  -- persistence succeeds so a failed database write cannot desync the session.
   local review_record = {
     card = card,
     state_before = utils.deep_copy(state_before),
@@ -247,20 +248,31 @@ function Session:answer(rating, elapsed_ms)
     is_reversed = is_reversed,
     queue_position = self.current_idx,
   }
-  table.insert(self.reviews, review_record)
 
-  -- Record review in store
-  self.store:add_review({
+  -- Record review and update card state atomically when the backend supports it.
+  local persisted_review = {
     card_id = card.id,
     rating = rating,
     reviewed_at = now,
     elapsed_ms = elapsed_ms or 0,
     state_before = status_before,
     state_after = status_after,
-  })
+  }
+  local review_id
+  if self.store.add_review_and_update_state then
+    review_id = self.store:add_review_and_update_state(persisted_review, card.id, new_state)
+  elseif self.store.with_transaction then
+    self.store:with_transaction(function()
+      review_id = self.store:add_review(persisted_review)
+      self.store:update_card_state(card.id, new_state)
+    end)
+  else
+    review_id = self.store:add_review(persisted_review)
+    self.store:update_card_state(card.id, new_state)
+  end
 
-  -- Update card state in store
-  self.store:update_card_state(card.id, new_state)
+  review_record.review_id = review_id
+  table.insert(self.reviews, review_record)
 
   -- Re-queue only if the card is already due. Most learning steps have a
   -- future due_date (e.g. 10m/1h); showing them before that time defeats the
@@ -289,16 +301,28 @@ function Session:undo()
     return false
   end
 
-  -- Pop last review
-  local last_review = table.remove(self.reviews)
+  local last_review = self.reviews[#self.reviews]
 
-  -- Restore card state in store
-  self.store:update_card_state(last_review.card.id, last_review.state_before)
-
-  -- Remove the last review from store
-  if self.store.remove_last_review then
-    self.store:remove_last_review()
+  -- Restore card state and remove the persisted review atomically when possible.
+  local function undo_persisted_review()
+    if self.store.remove_review and last_review.review_id then
+      local removed = self.store:remove_review(last_review.review_id, last_review.card.id)
+      if not removed then
+        error("flashcards: persisted review for undo was not found")
+      end
+    elseif self.store.remove_last_review then
+      self.store:remove_last_review()
+    end
+    self.store:update_card_state(last_review.card.id, last_review.state_before)
   end
+
+  if self.store.with_transaction then
+    self.store:with_transaction(undo_persisted_review)
+  else
+    undo_persisted_review()
+  end
+
+  table.remove(self.reviews)
 
   -- Restore queue position: put the card back at the position it was answered from
   -- First, remove any re-queued copies of this card that were added by the answer

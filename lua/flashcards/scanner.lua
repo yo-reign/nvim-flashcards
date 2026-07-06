@@ -188,35 +188,43 @@ function M.scan_file(file_path, store, scan_root)
     end
   end
 
-  -- Upsert all cards to storage, tracking new vs updated
-  for _, card in ipairs(cards) do
-    if card.id then
-      local existing = store:get_card(card.id)
-      store:upsert_card({
-        id = card.id,
-        file_path = rel_path,
-        line = card.line,
-        front = card.front,
-        back = card.back,
-        reversible = card.reversible,
-        suspended = card.suspended,
-        tags = card.tags,
-        note = card.note,
-      })
-      if existing then
-        result.cards_updated = result.cards_updated + 1
-      else
-        result.cards_new = result.cards_new + 1
+  local function persist_scan_results()
+    -- Upsert all cards to storage, tracking new vs updated
+    for _, card in ipairs(cards) do
+      if card.id then
+        local existing = store:get_card(card.id)
+        store:upsert_card({
+          id = card.id,
+          file_path = rel_path,
+          line = card.line,
+          front = card.front,
+          back = card.back,
+          reversible = card.reversible,
+          suspended = card.suspended,
+          tags = card.tags,
+          note = card.note,
+        })
+        if existing then
+          result.cards_updated = result.cards_updated + 1
+        else
+          result.cards_new = result.cards_new + 1
+        end
+      end
+    end
+
+    -- Per-file orphan detection: check stored cards for this file_path
+    local stored_cards = store:get_cards_by_file(rel_path)
+    for _, stored in ipairs(stored_cards) do
+      if stored.active and not found_ids[stored.id] then
+        store:mark_lost(stored.id)
       end
     end
   end
 
-  -- Per-file orphan detection: check stored cards for this file_path
-  local stored_cards = store:get_cards_by_file(rel_path)
-  for _, stored in ipairs(stored_cards) do
-    if stored.active and not found_ids[stored.id] then
-      store:mark_lost(stored.id)
-    end
+  if store.with_transaction then
+    store:with_transaction(persist_scan_results)
+  else
+    persist_scan_results()
   end
 
   return result
@@ -230,13 +238,22 @@ end
 --- @return number count number of cards newly marked as lost
 function M.mark_orphans(store, found_ids)
   local count = 0
-  local all_cards = store:get_all_cards()
-  for _, card in ipairs(all_cards) do
-    if card.active and not found_ids[card.id] then
-      store:mark_lost(card.id)
-      count = count + 1
+  local function mark_missing()
+    local all_cards = store:get_all_cards()
+    for _, card in ipairs(all_cards) do
+      if card.active and not found_ids[card.id] then
+        store:mark_lost(card.id)
+        count = count + 1
+      end
     end
   end
+
+  if store.with_transaction then
+    store:with_transaction(mark_missing)
+  else
+    mark_missing()
+  end
+
   return count
 end
 
