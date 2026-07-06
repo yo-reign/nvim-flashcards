@@ -226,6 +226,12 @@ function M.new(path)
   return self
 end
 
+--- Return true when this store currently has an open SQLite handle.
+--- @return boolean
+function SQLiteStore:is_open()
+  return self.db ~= nil
+end
+
 -- ============================================================================
 -- Low-level SQLite helpers
 -- ============================================================================

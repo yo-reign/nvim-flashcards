@@ -13,10 +13,15 @@ local _store = nil
 --- Initializes on first call, then returns the cached instance.
 --- @return table storage backend instance
 local function get_store()
+  if _store and _store.is_open and not _store:is_open() then
+    _store = nil
+  end
+
   if not _store then
     local path = config.get_storage_path()
-    _store = storage_factory.new(config.options.storage, path)
-    _store:init()
+    local store = storage_factory.new(config.options.storage, path)
+    store:init()
+    _store = store
   end
   return _store
 end
