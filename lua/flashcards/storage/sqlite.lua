@@ -266,6 +266,38 @@ function SQLiteStore:_error(context, sql, rc)
   return table.concat(parts, " | ")
 end
 
+function SQLiteStore:_should_reopen_after_error(err)
+  local msg = tostring(err)
+  -- SQLITE_READONLY_DBMOVED means the DB file was replaced/moved while this
+  -- connection was open. This happens easily in git/LFS/sync workflows.
+  if msg:find("extended_code=1032", 1, true) then
+    return true
+  end
+  -- SQLITE_IOERR_VNODE is the macOS VFS flavor of the stale-file/sidecar I/O
+  -- error users hit before reconnecting. Retry once on a fresh handle.
+  if msg:find("extended_code=6922", 1, true) then
+    return true
+  end
+  return false
+end
+
+function SQLiteStore:_reopen_after_external_change(err)
+  if self.db and self.sqlite then
+    pcall(function()
+      self.sqlite.sqlite3_close(self.db)
+    end)
+  end
+  self.db = nil
+  self.sqlite = nil
+  self.in_transaction = false
+
+  vim.notify(
+    "nvim-flashcards: database file changed or returned a transient I/O error; reconnecting SQLite handle",
+    vim.log.levels.WARN
+  )
+  self:init()
+end
+
 function SQLiteStore:_exec(sql)
   self:_assert_open()
   local errmsg = ffi.new("char *[1]")
@@ -322,7 +354,7 @@ function SQLiteStore:_bind_all(stmt, params)
   end
 end
 
-function SQLiteStore:_execute(sql, params)
+function SQLiteStore:_execute_once(sql, params)
   local stmt = self:_prepare(sql)
   local ok, err = pcall(function()
     self:_bind_all(stmt, params)
@@ -335,6 +367,23 @@ function SQLiteStore:_execute(sql, params)
   if not ok then
     error(err)
   end
+end
+
+function SQLiteStore:_execute(sql, params)
+  local ok, err = pcall(function()
+    self:_execute_once(sql, params)
+  end)
+  if ok then
+    return
+  end
+
+  if not self.in_transaction and self:_should_reopen_after_error(err) then
+    self:_reopen_after_external_change(err)
+    self:_execute_once(sql, params)
+    return
+  end
+
+  error(err)
 end
 
 function SQLiteStore:_column_value(stmt, col)
@@ -356,7 +405,7 @@ function SQLiteStore:_column_value(stmt, col)
   return nil
 end
 
-function SQLiteStore:_query_all(sql, params)
+function SQLiteStore:_query_all_once(sql, params)
   local stmt = self:_prepare(sql)
   local rows = {}
   local ok, err = pcall(function()
@@ -385,6 +434,22 @@ function SQLiteStore:_query_all(sql, params)
   return rows
 end
 
+function SQLiteStore:_query_all(sql, params)
+  local ok, rows_or_err = pcall(function()
+    return self:_query_all_once(sql, params)
+  end)
+  if ok then
+    return rows_or_err
+  end
+
+  if not self.in_transaction and self:_should_reopen_after_error(rows_or_err) then
+    self:_reopen_after_external_change(rows_or_err)
+    return self:_query_all_once(sql, params)
+  end
+
+  error(rows_or_err)
+end
+
 function SQLiteStore:_query_one(sql, params)
   local rows = self:_query_all(sql, params)
   return rows[1]
@@ -400,12 +465,8 @@ end
 --- storage operations into one atomic unit.
 --- @param fn function
 --- @return any result returned by fn
-function SQLiteStore:with_transaction(fn)
+function SQLiteStore:_transaction_once(fn)
   self:_assert_open()
-  if self.in_transaction then
-    return fn()
-  end
-
   self:_exec("BEGIN IMMEDIATE")
   self.in_transaction = true
 
@@ -424,6 +485,26 @@ function SQLiteStore:with_transaction(fn)
 
   self.in_transaction = false
   pcall(function() self:_exec("ROLLBACK") end)
+  error(result)
+end
+
+function SQLiteStore:with_transaction(fn)
+  if self.in_transaction then
+    return fn()
+  end
+
+  local ok, result = xpcall(function()
+    return self:_transaction_once(fn)
+  end, debug.traceback)
+  if ok then
+    return result
+  end
+
+  if self:_should_reopen_after_error(result) then
+    self:_reopen_after_external_change(result)
+    return self:_transaction_once(fn)
+  end
+
   error(result)
 end
 

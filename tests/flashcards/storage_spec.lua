@@ -13,6 +13,15 @@ describe("storage", function()
     end
   end
 
+  local function copy_file(src, dst)
+    local input = assert(io.open(src, "rb"))
+    local data = input:read("*a")
+    input:close()
+    local output = assert(io.open(dst, "wb"))
+    output:write(data)
+    output:close()
+  end
+
   before_each(function()
     -- Create a unique temp file for each test
     tmp_path = os.tmpname() .. ".db"
@@ -1394,6 +1403,35 @@ describe("storage", function()
       end)
       pcall(function() store:close() end)
       store = nil
+    end)
+
+    it("reconnects when the database file is replaced while open", function()
+      store:upsert_card({
+        id = "before1",
+        file_path = "test.md",
+        line = 1,
+        front = "Before Q",
+        back = "Before A",
+        tags = {},
+      })
+
+      local backup = tmp_path .. ".backup"
+      copy_file(tmp_path, backup)
+      os.remove(tmp_path)
+      copy_file(backup, tmp_path)
+
+      store:upsert_card({
+        id = "after1",
+        file_path = "test.md",
+        line = 2,
+        front = "After Q",
+        back = "After A",
+        tags = {},
+      })
+
+      assert.is_not_nil(store:get_card("before1"))
+      assert.is_not_nil(store:get_card("after1"))
+      os.remove(backup)
     end)
 
     it("data survives close and reopen cycle", function()
