@@ -255,7 +255,7 @@ daily_stats(date TEXT PRIMARY KEY, new_count INTEGER NOT NULL, review_count INTE
 Notes:
 
 - `rating` uses `0=Wrong`, `1=Correct` and is enforced with a SQL `CHECK` constraint.
-- Backend enables WAL journaling, `synchronous=FULL`, foreign keys, busy timeout, per-operation transactions, and startup `quick_check`/`foreign_key_check`.
+- Backend enables SQLite rollback journaling, `synchronous=FULL`, foreign keys, busy timeout, per-operation transactions, and startup `quick_check`/`foreign_key_check`.
 - Review answer persistence updates the review log and card state in one transaction.
 - First SQLite open can one-time import a sibling legacy JSON file into an empty database; malformed legacy JSON fails loudly instead of creating empty history.
 

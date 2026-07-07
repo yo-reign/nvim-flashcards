@@ -15,7 +15,7 @@ A Neovim plugin for markdown-based spaced repetition flashcards using a simplifi
 - **Source refs** - Leading section prefixes like `(1.2.3:5)` render as review footnotes
 - **Telescope integration** - Browse, search, and filter cards
 - **Orphan management** - Soft-delete lost cards, reactivate or purge them
-- **SQLite storage** - ACID transactions, WAL journaling, foreign keys, and integrity checks for durable review history
+- **SQLite storage** - ACID transactions, rollback journaling, foreign keys, and integrity checks for durable review history
 - **Auto-sync** - Cards update on file save
 
 ## Requirements
@@ -332,7 +332,7 @@ Cards are identified by unique IDs stored as markdown comments (`<!-- fc:abc1234
 
 ### Storage
 
-Card state is stored in a SQLite database (`flashcards.db`). The backend uses WAL journaling, `synchronous=FULL`, foreign keys, per-operation transactions, and startup integrity checks so review history is committed durably instead of rewriting one fragile JSON file.
+Card state is stored in a SQLite database (`flashcards.db`). The backend uses SQLite rollback journaling, `synchronous=FULL`, foreign keys, per-operation transactions, and startup integrity checks so review history is committed durably instead of rewriting one fragile JSON file.
 
 The database location is controlled by `db_path` in your config. If `db_path` is a directory, `flashcards.db` is created inside it.
 

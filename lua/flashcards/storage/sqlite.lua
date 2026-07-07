@@ -669,11 +669,12 @@ function SQLiteStore:init()
   local ok, init_err = pcall(function()
     self.sqlite.sqlite3_busy_timeout(self.db, 5000)
 
-    -- Durability-first pragmas. WAL keeps readers non-blocking while FULL sync
-    -- favors preserving review history over shaving a few milliseconds per write.
+    -- Durability-first pragmas. Use SQLite's rollback journal instead of WAL
+    -- so the database stays a single durable file in notes/git workflows and
+    -- does not depend on long-lived -wal/-shm sidecars.
     self:_exec("PRAGMA busy_timeout = 5000")
     self:_exec("PRAGMA foreign_keys = ON")
-    self:_exec("PRAGMA journal_mode = WAL")
+    self:_exec("PRAGMA journal_mode = DELETE")
     self:_exec("PRAGMA synchronous = FULL")
     self:_exec(SCHEMA_SQL)
     self:_import_legacy_json_if_present()
@@ -690,27 +691,15 @@ function SQLiteStore:init()
 end
 
 --- SQLite commits every mutating operation immediately. save() exists to keep
---- the storage interface stable and checkpoints WAL pages when safe.
+--- the storage interface stable for callers.
 function SQLiteStore:save()
-  if not self.db or self.in_transaction then
-    return true
-  end
-  pcall(function()
-    self:_exec("PRAGMA wal_checkpoint(PASSIVE)")
-  end)
   return true
 end
 
---- Save/checkpoint and close the database connection.
+--- Close the database connection.
 function SQLiteStore:close()
   if not self.db then
     return
-  end
-
-  if not self.in_transaction then
-    pcall(function()
-      self:_exec("PRAGMA wal_checkpoint(TRUNCATE)")
-    end)
   end
 
   local rc = self.sqlite.sqlite3_close(self.db)

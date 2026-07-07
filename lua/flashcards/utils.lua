@@ -71,24 +71,21 @@ end
 
 --- Extract a leading source/section reference from card front text.
 ---
---- Source refs use textbook-style prefixes such as `(1.1.2:6)` or
---- `(1.1.2:8-10)`. The marker is metadata, not quiz text, so callers can
---- store it as the card note while rendering the cleaned front.
----
---- To avoid false positives on ordinary parenthetical prompts, this only
---- matches numeric section refs with at least one dotted section component
---- before the paragraph separator (`:`).
+--- Source refs are any non-empty parenthesized prefix, such as `(1.1.2:6)`,
+--- `(Lang, Algebra I, §2)`, or `(exercise 4a)`. The marker is metadata, not
+--- quiz text, so callers can store it as the card note while rendering the
+--- cleaned front.
 --- @param text string
 --- @return string|nil source_ref
 --- @return string cleaned_text original text with the prefix removed, or text unchanged
 function M.extract_source_ref(text)
-  local ref, rest = text:match("^%s*%((%d+%.%d[%d%.]*:%d[%d%-]*)%)%s*(.*)$")
+  local ref, rest = text:match("^%s*%(([^%)]+)%)%s*(.*)$")
   if not ref then
     return nil, text
   end
 
-  -- Reject malformed refs like `1..2:3`, `1.2.:3`, or `1.2:3-`.
-  if ref:find("%.%.") or ref:find("%.:") or ref:find("%-$") then
+  ref = M.trim(ref)
+  if ref == "" then
     return nil, text
   end
 
