@@ -92,6 +92,64 @@ describe("storage", function()
       assert.is_true(card.active)
     end)
 
+    it("normalizes leading source refs on upsert", function()
+      store:upsert_card({
+        id = "3kuxvz1f",
+        file_path = "math/sets.md",
+        line = 12,
+        front = "(1.1.2:1) How do you write natural numbers in set notation?",
+        back = "As `{ 1, 2, 3,... }` where the ellipsis (...) indicates that the numbers continue to infinity.",
+        tags = { "math" },
+      })
+
+      local card = store:get_card("3kuxvz1f")
+      assert.equals("How do you write natural numbers in set notation?", card.front)
+      assert.equals("1.1.2:1", card.note)
+      assert.equals(
+        "As `{ 1, 2, 3,... }` where the ellipsis (...) indicates that the numbers continue to infinity.",
+        card.back
+      )
+    end)
+
+    it("normalizes stale stored source refs on read", function()
+      store:upsert_card({
+        id = "stale123",
+        file_path = "math/sets.md",
+        line = 13,
+        front = "Clean front",
+        back = "Back",
+        tags = {},
+      })
+      store:_execute("UPDATE cards SET front = ?, note = NULL WHERE id = ?", {
+        "(1.1.2:1) How do you write natural numbers in set notation?",
+        "stale123",
+      })
+
+      local card = store:get_card("stale123")
+      assert.equals("How do you write natural numbers in set notation?", card.front)
+      assert.equals("1.1.2:1", card.note)
+    end)
+
+    it("prefers stale stored source refs over legacy notes on read", function()
+      store:upsert_card({
+        id = "stalenote",
+        file_path = "math/sets.md",
+        line = 14,
+        front = "Clean front",
+        back = "Back",
+        note = "legacy note",
+        tags = {},
+      })
+      store:_execute("UPDATE cards SET front = ? WHERE id = ?", {
+        "(1.1.2:1) How do you write natural numbers in set notation?",
+        "stalenote",
+      })
+
+      local card = store:get_card("stalenote")
+      assert.equals("How do you write natural numbers in set notation?", card.front)
+      assert.equals("1.1.2:1", card.note)
+    end)
+
     it("returns nil for missing card", function()
       assert.is_nil(store:get_card("nonexistent"))
     end)

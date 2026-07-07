@@ -811,21 +811,34 @@ function SQLiteStore:_get_card_tags(id)
   return tags
 end
 
+local function normalize_source_ref_fields(front, note)
+  front = front or ""
+  local source_ref, clean_front = utils.extract_source_ref(front)
+  if source_ref then
+    front = clean_front
+    -- Match parser precedence: a leading source ref is the review note even if
+    -- a stale DB row also has an older legacy note value.
+    note = source_ref
+  end
+  return front, note
+end
+
 function SQLiteStore:_build_card(row)
   if not row then
     return nil
   end
+  local front, note = normalize_source_ref_fields(row.front, row.note)
   return {
     id = row.id,
     file_path = row.file_path,
     line = row.line,
-    front = row.front,
+    front = front,
     back = row.back,
     reversible = as_bool(row.reversible),
     suspended = as_bool(row.suspended),
     active = as_bool(row.active),
     tags = self:_get_card_tags(row.id),
-    note = row.note,
+    note = note,
     state = deepcopy_state(row),
     created_at = row.created_at,
     updated_at = row.updated_at,
@@ -868,6 +881,8 @@ end
 --- existing FSRS state/review history are preserved.
 --- @param card table { id, file_path, line, front, back, reversible, suspended, tags, note }
 function SQLiteStore:upsert_card(card)
+  local front, note = normalize_source_ref_fields(card.front, card.note)
+
   self:with_transaction(function()
     local now = utils.now()
     local existing = self:_query_one("SELECT id FROM cards WHERE id = ?", { card.id })
@@ -881,11 +896,11 @@ WHERE id = ?
 ]], {
         card.file_path or "",
         card.line or 0,
-        card.front or "",
+        front,
         card.back or "",
         as_int_bool(card.reversible),
         as_int_bool(card.suspended),
-        card.note,
+        note,
         now,
         card.id,
       })
@@ -899,11 +914,11 @@ VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, NULL)
         card.id,
         card.file_path or "",
         card.line or 0,
-        card.front or "",
+        front,
         card.back or "",
         as_int_bool(card.reversible),
         as_int_bool(card.suspended),
-        card.note,
+        note,
         now,
         now,
       })
