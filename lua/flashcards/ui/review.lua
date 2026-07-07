@@ -98,6 +98,30 @@ local function add_language_labels(content)
   return table.concat(result, "\n")
 end
 
+local function add_note_prefix(content, note)
+  if not config.options.ui.show_note or not note or note == "" then
+    return content
+  end
+
+  local prefix = "[" .. note .. "]"
+  if not content or content == "" then
+    return prefix
+  end
+
+  local lines = utils.lines(content)
+  if #lines == 0 then
+    return prefix
+  end
+
+  -- Do not corrupt a front that begins with a markdown code fence.
+  if lines[1]:match("^%s*```") then
+    return prefix .. "\n" .. content
+  end
+
+  lines[1] = prefix .. " " .. lines[1]
+  return table.concat(lines, "\n")
+end
+
 local function stop_markdown_highlighting(bufnr)
   if not vim.api.nvim_buf_is_valid(bufnr) then
     return
@@ -292,8 +316,9 @@ local function render_card()
   table.insert(lines, header)
   table.insert(lines, "")
 
-  -- Front content with language labels
-  local front_with_labels = add_language_labels(display_front)
+  -- Front content with source/note prefix and language labels
+  local front_with_note = add_note_prefix(display_front, card.note)
+  local front_with_labels = add_language_labels(front_with_note)
   for _, line in ipairs(utils.lines(front_with_labels)) do
     table.insert(lines, "  " .. line)
   end
@@ -323,12 +348,6 @@ local function render_card()
         tag_line = tag_line .. "#" .. tag .. " "
       end
       table.insert(lines, tag_line)
-    end
-
-    -- Note annotation
-    if config.options.ui.show_note and card.note then
-      table.insert(lines, "")
-      table.insert(lines, "  [" .. card.note .. "]")
     end
 
     -- Rating buttons with interval previews
