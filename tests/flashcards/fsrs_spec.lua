@@ -202,6 +202,19 @@ describe("fsrs", function()
             local interval = scheduler:next_interval(1000)
             assert.equals(30, interval)
         end)
+
+        it("keeps fuzzed scheduled intervals within the maximum", function()
+            local fsrs = require("flashcards.fsrs")
+            local scheduler = fsrs.new({ maximum_interval = 30, enable_fuzz = true })
+            scheduler.fuzz_interval = function() return 31 end
+
+            local _, intervals = scheduler:schedule({
+                state = "review", stability = 100, difficulty = 5,
+                last_review = mock_utils.now() - 86400, reps = 5, lapses = 0,
+            }, fsrs.Rating.Correct)
+
+            assert.equals(30, intervals.days)
+        end)
     end)
 
     describe("FSRS:schedule - New cards", function()
@@ -359,6 +372,24 @@ describe("fsrs", function()
             assert.is_true(intervals.days > 3)
         end)
 
+        it("preserves low retained stability when relearning graduates", function()
+            local fsrs = require("flashcards.fsrs")
+            local scheduler = fsrs.new({ enable_fuzz = false, graduating_interval_days = 3 })
+
+            local new_state, intervals = scheduler:schedule({
+                state = "relearning",
+                stability = 0.5,
+                difficulty = 5.5,
+                learning_step = 2,
+                reps = 5,
+                lapses = 1,
+            }, fsrs.Rating.Correct)
+
+            assert.equals("review", new_state.status)
+            assert.equals(1.5, new_state.stability)
+            assert.equals(2, intervals.days)
+        end)
+
         it("should reset to first step on wrong", function()
             local fsrs = require("flashcards.fsrs")
             local scheduler = fsrs.new({ enable_fuzz = false })
@@ -381,6 +412,24 @@ describe("fsrs", function()
     end)
 
     describe("FSRS:schedule - Review cards", function()
+        it("treats future last_review as no elapsed time", function()
+            local fsrs = require("flashcards.fsrs")
+            local scheduler = fsrs.new({ enable_fuzz = false })
+            local base = {
+                state = "review", stability = 10.0, difficulty = 5.0,
+                reps = 5, lapses = 0,
+            }
+            local immediate = vim.tbl_extend("force", {}, base, { last_review = mock_utils.now() })
+            local future = vim.tbl_extend("force", {}, base, { last_review = mock_utils.now() + 86400 * 10 })
+
+            local expected = scheduler:schedule(immediate, fsrs.Rating.Correct)
+            local actual = scheduler:schedule(future, fsrs.Rating.Correct)
+
+            assert.equals(0, actual.elapsed_days)
+            assert.equals(expected.stability, actual.stability)
+            assert.equals(expected.scheduled_days, actual.scheduled_days)
+        end)
+
         it("should increase stability on correct review", function()
             local fsrs = require("flashcards.fsrs")
             local scheduler = fsrs.new({ enable_fuzz = false })

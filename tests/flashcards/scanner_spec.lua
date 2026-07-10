@@ -466,6 +466,170 @@ describe("scanner", function()
   end)
 
   -- ==========================================================================
+  -- Safe orphan handling and source-path migration
+  -- ==========================================================================
+
+  describe("safe orphan handling and source paths", function()
+    it("does not orphan existing cards when parsing a file fails", function()
+      local path = tmpfile("Q ::: A <!-- fc:safe0001 -->")
+      scanner.scan_file(path, store, "/tmp")
+      assert.is_true(store:get_card("safe0001").active)
+
+      assert.is_true(utils.write_file(path, table.concat({
+        ":::card <!-- fc:safe0001 -->",
+        "Front",
+        ":-:",
+        "Back",
+      }, "\n")))
+      local result = scanner.scan_file(path, store, "/tmp")
+      os.remove(path)
+
+      assert.is_false(result.can_mark_orphans)
+      assert.truthy(#result.errors > 0)
+      assert.is_true(store:get_card("safe0001").active)
+    end)
+
+    it("skips global orphaning when an ID write fails", function()
+      store:upsert_card({ id = "keepwrite", file_path = "missing.md", line = 1, front = "Q", back = "A", tags = {} })
+      local dir = tmpdir()
+      assert.is_true(utils.write_file(dir .. "/new.md", "New Q ::: New A"))
+      local config = {
+        options = { file_patterns = { "*.md" }, ignore_patterns = {} },
+        should_ignore = function() return false end,
+      }
+      local original_write_file = utils.write_file
+      utils.write_file = function() return false, "permission denied" end
+      local report = scanner.scan({ dir }, store, config)
+      utils.write_file = original_write_file
+      vim.fn.delete(dir, "rf")
+
+      assert.truthy(#report.errors > 0)
+      assert.equals(0, report.orphans_found)
+      assert.is_true(store:get_card("keepwrite").active)
+    end)
+
+    it("skips global orphaning when any scanned file has an error", function()
+      store:upsert_card({ id = "keep0001", file_path = "missing.md", line = 1, front = "Q", back = "A", tags = {} })
+      local dir = tmpdir()
+      assert.is_true(utils.write_file(dir .. "/broken.md", table.concat({
+        ":::card <!-- fc:broken01 -->",
+        "Front",
+        ":-:",
+        "Back",
+      }, "\n")))
+      local config = {
+        options = { file_patterns = { "*.md" }, ignore_patterns = {} },
+        should_ignore = function() return false end,
+      }
+
+      local report = scanner.scan({ dir }, store, config)
+      vim.fn.delete(dir, "rf")
+
+      assert.truthy(#report.errors > 0)
+      assert.equals(0, report.orphans_found)
+      assert.is_true(store:get_card("keep0001").active)
+    end)
+
+    it("keeps identically named files in separate roots distinct", function()
+      local root_a, root_b = tmpdir(), tmpdir()
+      assert.is_true(utils.write_file(root_a .. "/deck.md", "A ::: One <!-- fc:roota001 -->"))
+      assert.is_true(utils.write_file(root_b .. "/deck.md", "B ::: Two <!-- fc:rootb001 -->"))
+      -- Simulate a pre-upgrade database row whose relative path is ambiguous.
+      -- It must be migrated by matching its card ID in root B, never by a
+      -- blanket root-prefix rewrite.
+      store:upsert_card({ id = "rootb001", file_path = "deck.md", line = 1, front = "Old B", back = "Old", tags = {} })
+      store:update_card_state("rootb001", { status = "review", stability = 6, reps = 4 })
+      local config = {
+        options = { file_patterns = { "*.md" }, ignore_patterns = {} },
+        should_ignore = function() return false end,
+      }
+
+      scanner.scan({ root_a, root_b }, store, config)
+      local card_a = store:get_card("roota001")
+      local card_b = store:get_card("rootb001")
+      vim.fn.delete(root_a, "rf")
+      vim.fn.delete(root_b, "rf")
+
+      assert.is_true(card_a.active)
+      assert.is_true(card_b.active)
+      assert.not_equals(card_a.file_path, card_b.file_path)
+      assert.equals(utils.canonical_path(root_a .. "/deck.md"), card_a.file_path)
+      assert.equals(utils.canonical_path(root_b .. "/deck.md"), card_b.file_path)
+      assert.equals("review", card_b.state.status)
+      assert.equals(6, card_b.state.stability)
+      assert.equals(4, card_b.state.reps)
+    end)
+
+    it("does not orphan ambiguous legacy paths during a one-file scan", function()
+      local root_a, root_b = tmpdir(), tmpdir()
+      local path_a = root_a .. "/deck.md"
+      assert.is_true(utils.write_file(path_a, "A ::: One <!-- fc:roota002 -->"))
+      assert.is_true(utils.write_file(root_b .. "/deck.md", "B ::: Two <!-- fc:rootb002 -->"))
+      store:upsert_card({ id = "rootb002", file_path = "deck.md", line = 1, front = "B", back = "Two", tags = {} })
+
+      scanner.scan_file(path_a, store, root_a, { directories = { root_a, root_b } })
+      local legacy_card = store:get_card("rootb002")
+      vim.fn.delete(root_a, "rf")
+      vim.fn.delete(root_b, "rf")
+
+      assert.is_true(legacy_card.active)
+      assert.equals("deck.md", legacy_card.file_path)
+    end)
+
+    it("upgrades legacy relative paths by ID without losing state or reviews", function()
+      local root = tmpdir()
+      vim.fn.mkdir(root .. "/topic", "p")
+      local path = root .. "/topic/a.md"
+      assert.is_true(utils.write_file(path, "Updated Q ::: Updated A <!-- fc:legacy01 -->"))
+      store:upsert_card({ id = "legacy01", file_path = "topic/a.md", line = 1, front = "Old Q", back = "Old A", tags = {} })
+      store:update_card_state("legacy01", {
+        status = "review", stability = 8.5, difficulty = 4.2, due_date = utils.now() + 86400,
+        last_review = utils.now(), reps = 7, lapses = 2,
+      })
+      store:add_review({ card_id = "legacy01", rating = 1, reviewed_at = utils.now(), elapsed_ms = 1000, state_before = "review", state_after = "review" })
+      local config = {
+        options = { file_patterns = { "*.md" }, ignore_patterns = {} },
+        should_ignore = function() return false end,
+      }
+
+      scanner.scan({ root }, store, config)
+      -- Verify the ID-driven path upgrade, state, and history survive a real
+      -- close/reopen cycle rather than merely the in-memory SQLite handle.
+      store:close()
+      store = Storage.new("sqlite", store_path)
+      store:init()
+      local card = store:get_card("legacy01")
+      local state = store:get_card_state("legacy01")
+      local reviews = store:get_reviews("legacy01")
+      vim.fn.delete(root, "rf")
+
+      assert.equals(utils.canonical_path(path), card.file_path)
+      assert.equals("Updated Q", card.front)
+      assert.equals("Updated A", card.back)
+      assert.equals("review", state.status)
+      assert.equals(8.5, state.stability)
+      assert.equals(7, state.reps)
+      assert.equals(2, state.lapses)
+      assert.equals(1, #reviews)
+    end)
+
+    it("keeps existing free-form source refs compatible during rescan", function()
+      local path = tmpfile("(exercise 4a) Define a group ::: An algebraic structure <!-- fc:legacyref -->")
+      store:upsert_card({
+        id = "legacyref", file_path = "old.md", line = 1,
+        front = "Define a group", back = "An algebraic structure", note = "exercise 4a", tags = {},
+      })
+
+      scanner.scan_file(path, store, "/tmp")
+      local card = store:get_card("legacyref")
+      os.remove(path)
+
+      assert.equals("Define a group", card.front)
+      assert.equals("exercise 4a", card.note)
+    end)
+  end)
+
+  -- ==========================================================================
   -- find_files
   -- ==========================================================================
 

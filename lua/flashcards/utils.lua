@@ -69,16 +69,13 @@ function M.extract_note(text)
   return text:match("<!%-%-% *note:% *(.-)% *%-%->")
 end
 
---- Extract a leading source/section reference from card front text.
----
---- Source refs are any non-empty parenthesized prefix, such as `(1.1.2:6)`,
---- `(Lang, Algebra I, §2)`, or `(exercise 4a)`. The marker is metadata, not
---- quiz text, so callers can store it as the card note while rendering the
---- cleaned front.
+--- Extract any leading parenthesized prefix without deciding whether it is
+--- source metadata. This is retained only to recognize source refs written by
+--- releases that accepted arbitrary parenthesized prefixes.
 --- @param text string
---- @return string|nil source_ref
+--- @return string|nil prefix
 --- @return string cleaned_text original text with the prefix removed, or text unchanged
-function M.extract_source_ref(text)
+function M.extract_legacy_source_ref(text)
   local ref, rest = text:match("^%s*%(([^%)]+)%)%s*(.*)$")
   if not ref then
     return nil, text
@@ -90,6 +87,37 @@ function M.extract_source_ref(text)
   end
 
   return ref, M.trim(rest)
+end
+
+--- Extract an unambiguous leading source reference from card front text.
+---
+--- Numeric textbook references such as `(1.1.2:6)` remain supported. Free-form
+--- references must use `(ref: ...)`, so ordinary prompts such as `(True/False)`
+--- are never silently removed from the card front.
+--- @param text string
+--- @return string|nil source_ref
+--- @return string cleaned_text original text with the prefix removed, or text unchanged
+function M.extract_source_ref(text)
+  local ref, rest = M.extract_legacy_source_ref(text)
+  if not ref then
+    return nil, text
+  end
+
+  local explicit_ref = ref:match("^[Rr][Ee][Ff]:%s*(.*)$")
+  if explicit_ref then
+    explicit_ref = M.trim(explicit_ref)
+    if explicit_ref ~= "" then
+      return explicit_ref, rest
+    end
+    return nil, text
+  end
+
+  local numeric_section = ref:match("^%d+%.%d[%d%.]*:%d[%d%-]*$")
+  if numeric_section and not ref:find("%.%.") and not ref:find("%.:") and not ref:find("%-$") then
+    return ref, rest
+  end
+
+  return nil, text
 end
 
 -- ============================================================================
@@ -277,6 +305,42 @@ function M.normalize_path(path)
   return path
 end
 
+--- Return whether a path is absolute on Unix or Windows.
+--- @param path string
+--- @return boolean
+function M.is_absolute_path(path)
+  return path:match("^[/\\]") ~= nil or path:match("^%a:[/\\]") ~= nil
+end
+
+--- Canonicalize a path to an absolute path, resolving symlinks where possible.
+--- @param path string
+--- @return string
+function M.canonical_path(path)
+  local absolute = vim.fn.fnamemodify(M.normalize_path(path), ":p")
+  return M.normalize_path(vim.fn.resolve(absolute))
+end
+
+--- Resolve a canonical or legacy root-relative card path inside configured roots.
+--- @param file_path string
+--- @param directories string[]
+--- @return string|nil canonical absolute path
+function M.resolve_card_path(file_path, directories)
+  if not file_path or not directories then
+    return nil
+  end
+
+  for _, dir in ipairs(directories) do
+    local root = M.canonical_path(dir)
+    local candidate = M.is_absolute_path(file_path) and file_path or root .. "/" .. file_path
+    local canonical = M.canonical_path(candidate)
+    if vim.fn.filereadable(canonical) == 1 and M.is_subpath(canonical, root) then
+      return canonical
+    end
+  end
+
+  return nil
+end
+
 --- Check if path is under parent directory.
 --- @param path string
 --- @param parent string
@@ -295,7 +359,7 @@ end
 function M.relative_path(path, base)
   local norm_path = M.normalize_path(path)
   local norm_base = M.normalize_path(base)
-  if norm_path:sub(1, #norm_base) == norm_base then
+  if M.is_subpath(norm_path, norm_base) then
     local rel = norm_path:sub(#norm_base + 1)
     -- Remove leading slash
     if rel:sub(1, 1) == "/" then

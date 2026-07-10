@@ -567,6 +567,9 @@ function M.undo()
   end
 
   if state.session:undo() then
+    -- The restored card is shown with its answer already visible; do not reuse
+    -- the next card's question timer as this card's review duration.
+    state.card_shown_at = nil
     state.showing_answer = true
     render_card()
   else
@@ -586,21 +589,13 @@ function M.edit_card()
     return
   end
 
-  -- Resolve to absolute path from configured directories (with path traversal guard)
-  local file_path = card.file_path
+  -- Resolve canonical source paths and legacy root-relative paths inside the
+  -- configured directories before opening an editor buffer.
+  local stored_path = card.file_path
+  local file_path = utils.resolve_card_path(stored_path, config.options.directories)
   local line_nr = card.line or 1
-  local resolved = false
-  for _, dir in ipairs(config.options.directories) do
-    local abs = vim.fn.resolve(dir .. "/" .. file_path)
-    if vim.fn.filereadable(abs) == 1 and utils.is_subpath(abs, dir) then
-      file_path = abs
-      resolved = true
-      break
-    end
-  end
-
-  if not resolved then
-    vim.notify("Cannot resolve card file path: " .. file_path, vim.log.levels.ERROR)
+  if not file_path then
+    vim.notify("Cannot resolve card file path: " .. stored_path, vim.log.levels.ERROR)
     return
   end
 

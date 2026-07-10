@@ -23,25 +23,13 @@ local M = {}
 -- Shared Helpers
 -- ============================================================================
 
---- Resolve a relative card file_path to an absolute path.
---- @param file_path string relative path from card
---- @return string absolute path (or original if not resolved)
---- Resolve a relative card file_path to an absolute path.
---- Uses vim.fn.resolve() to canonicalize and validates the result
---- stays within configured directories (path traversal guard).
---- @param file_path string relative path from card
---- @return string|nil absolute path, or nil if path escapes configured directories
+--- Resolve canonical source paths and legacy root-relative paths while keeping
+--- card navigation inside configured directories.
+--- @param file_path string canonical or legacy root-relative path from card
+--- @return string|nil canonical absolute path, or nil if unresolved/unsafe
 local function resolve_path(file_path)
-  if not config.options or not config.options.directories then
-    return nil
-  end
-  for _, dir in ipairs(config.options.directories) do
-    local abs = vim.fn.resolve(dir .. "/" .. file_path)
-    if vim.fn.filereadable(abs) == 1 and utils.is_subpath(abs, dir) then
-      return abs
-    end
-  end
-  return nil
+  local options = config.options
+  return options and utils.resolve_card_path(file_path, options.directories) or nil
 end
 
 --- Get the state icon for a card status from config.

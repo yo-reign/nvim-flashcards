@@ -963,19 +963,42 @@ function SQLiteStore:get_all_cards()
   return result
 end
 
---- Get active cards for a specific file path.
---- @param path string file path to filter by
+--- Get active cards matching one or more source paths.
+--- @param paths string[] canonical and/or legacy root-relative source paths
 --- @return table[] list of card tables
-function SQLiteStore:get_cards_by_file(path)
+function SQLiteStore:get_cards_by_file_paths(paths)
+  local params = {}
+  local seen = {}
+  for _, path in ipairs(paths or {}) do
+    if path and not seen[path] then
+      seen[path] = true
+      params[#params + 1] = path
+    end
+  end
+  if #params == 0 then
+    return {}
+  end
+
+  local placeholders = {}
+  for _ = 1, #params do
+    placeholders[#placeholders + 1] = "?"
+  end
   local rows = self:_query_all(
-    self:_card_select("WHERE c.active = 1 AND c.file_path = ? ORDER BY c.line, c.id"),
-    { path }
+    self:_card_select("WHERE c.active = 1 AND c.file_path IN (" .. table.concat(placeholders, ", ") .. ") ORDER BY c.line, c.id"),
+    params
   )
   local result = {}
   for _, row in ipairs(rows) do
     result[#result + 1] = self:_build_card(row)
   end
   return result
+end
+
+--- Get active cards for a specific file path.
+--- @param path string file path to filter by
+--- @return table[] list of card tables
+function SQLiteStore:get_cards_by_file(path)
+  return self:get_cards_by_file_paths({ path })
 end
 
 -- ============================================================================
@@ -1008,13 +1031,25 @@ end
 --- @param id string card ID
 function SQLiteStore:delete_card(id)
   self:with_transaction(function()
+    local reviews = self:_query_all(
+      "SELECT reviewed_at, state_before FROM reviews WHERE card_id = ?",
+      { id }
+    )
+    self:_decrement_daily_stats(reviews)
     self:_execute("DELETE FROM cards WHERE id = ?", { id })
   end)
 end
 
---- Permanently remove all inactive cards.
+--- Permanently remove all inactive cards and their corresponding daily stats.
 function SQLiteStore:delete_all_orphans()
   self:with_transaction(function()
+    local reviews = self:_query_all([[
+SELECT r.reviewed_at, r.state_before
+FROM reviews r
+JOIN cards c ON c.id = r.card_id
+WHERE c.active = 0
+]])
+    self:_decrement_daily_stats(reviews)
     self:_execute("DELETE FROM cards WHERE active = 0")
   end)
 end
@@ -1243,6 +1278,34 @@ ORDER BY id ASC
   return result
 end
 
+--- Decrement daily counts for reviews that are being removed in the current transaction.
+--- @param reviews table[] rows with reviewed_at and state_before
+function SQLiteStore:_decrement_daily_stats(reviews)
+  local deltas = {}
+  for _, review in ipairs(reviews or {}) do
+    if review.reviewed_at then
+      local date = utils.format_date(review.reviewed_at)
+      local delta = deltas[date] or { new_count = 0, review_count = 0 }
+      if review.state_before == "new" then
+        delta.new_count = delta.new_count + 1
+      else
+        delta.review_count = delta.review_count + 1
+      end
+      deltas[date] = delta
+    end
+  end
+
+  for date, delta in pairs(deltas) do
+    self:_execute([[
+UPDATE daily_stats
+SET new_count = CASE WHEN new_count > ? THEN new_count - ? ELSE 0 END,
+    review_count = CASE WHEN review_count > ? THEN review_count - ? ELSE 0 END
+WHERE date = ?
+]], { delta.new_count, delta.new_count, delta.review_count, delta.review_count, date })
+    self:_execute("DELETE FROM daily_stats WHERE date = ? AND new_count = 0 AND review_count = 0", { date })
+  end
+end
+
 --- Remove one specific persisted review from the review log.
 --- @param review_id number review row id returned by add_review
 --- @param card_id string|nil optional guard; when supplied the row must belong to this card
@@ -1267,24 +1330,7 @@ function SQLiteStore:remove_review(review_id, card_id)
     end
 
     self:_execute("DELETE FROM reviews WHERE id = ?", { review.id })
-
-    local date = review.reviewed_at and utils.format_date(review.reviewed_at)
-    if date then
-      if review.state_before == "new" then
-        self:_execute([[
-UPDATE daily_stats
-SET new_count = CASE WHEN new_count > 0 THEN new_count - 1 ELSE 0 END
-WHERE date = ?
-]], { date })
-      else
-        self:_execute([[
-UPDATE daily_stats
-SET review_count = CASE WHEN review_count > 0 THEN review_count - 1 ELSE 0 END
-WHERE date = ?
-]], { date })
-      end
-      self:_execute("DELETE FROM daily_stats WHERE date = ? AND new_count = 0 AND review_count = 0", { date })
-    end
+    self:_decrement_daily_stats({ review })
 
     return true
   end)
@@ -1405,6 +1451,15 @@ FROM reviews
     streak = streak,
     avg_time_ms = avg_time_ms,
   }
+end
+
+--- Get the number of new cards introduced today (or on a supplied timestamp).
+--- @param ts number|nil unix timestamp, defaults to now
+--- @return number count
+function SQLiteStore:get_daily_new_count(ts)
+  local date = utils.format_date(ts or utils.now())
+  local row = self:_query_one("SELECT new_count FROM daily_stats WHERE date = ?", { date })
+  return row and row.new_count or 0
 end
 
 --- Get daily statistics for the last N days.

@@ -79,7 +79,10 @@ function M.new_session(store, fsrs, opts)
   self.reversed_map = {}
   self.start_time = utils.now()
   self.tag = opts.tag or nil
-  self.new_cards_limit = opts.new_cards_per_day or 20
+  self.new_cards_limit = opts.new_cards_per_day
+  if self.new_cards_limit == nil then
+    self.new_cards_limit = 20
+  end
   self.initial_count = 0
   return self
 end
@@ -112,10 +115,15 @@ function Session:load_cards()
     end
   end
 
-  -- Limit new cards
-  if #new > self.new_cards_limit then
+  -- Limit new cards across the entire calendar day, not merely this session.
+  local introduced_today = 0
+  if self.store.get_daily_new_count then
+    introduced_today = self.store:get_daily_new_count()
+  end
+  local remaining_new = math.max(0, self.new_cards_limit - introduced_today)
+  if #new > remaining_new then
     local limited = {}
-    for i = 1, self.new_cards_limit do
+    for i = 1, remaining_new do
       limited[i] = new[i]
     end
     new = limited

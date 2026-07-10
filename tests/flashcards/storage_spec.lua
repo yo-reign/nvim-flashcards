@@ -981,6 +981,20 @@ describe("storage", function()
       assert.is_nil(store:get_card("c1"))
     end)
 
+    it("deletes a card's review contribution from daily stats", function()
+      local now = utils.now()
+      store:upsert_card({ id = "c1", file_path = "test.md", line = 1, front = "Q", back = "A", tags = {} })
+      store:add_review({ card_id = "c1", rating = 1, reviewed_at = now, elapsed_ms = 1000, state_before = "new", state_after = "learning" })
+      store:add_review({ card_id = "c1", rating = 1, reviewed_at = now, elapsed_ms = 1000, state_before = "learning", state_after = "review" })
+
+      store:delete_card("c1")
+
+      local today = store:get_daily_stats(1)[1]
+      assert.equals(0, today.new_count)
+      assert.equals(0, today.review_count)
+      assert.equals(0, store:get_stats().total_reviews)
+    end)
+
     it("delete_all_orphans removes all inactive", function()
       store:upsert_card({
         id = "c1",
@@ -1015,6 +1029,22 @@ describe("storage", function()
       assert.is_nil(store:get_card("c1"))
       assert.is_nil(store:get_card("c2"))
       assert.is_not_nil(store:get_card("c3"))
+    end)
+
+    it("deletes all orphan review contributions from daily stats", function()
+      local now = utils.now()
+      store:upsert_card({ id = "c1", file_path = "test.md", line = 1, front = "Q1", back = "A1", tags = {} })
+      store:upsert_card({ id = "c2", file_path = "test.md", line = 2, front = "Q2", back = "A2", tags = {} })
+      store:add_review({ card_id = "c1", rating = 1, reviewed_at = now, elapsed_ms = 1000, state_before = "new", state_after = "learning" })
+      store:add_review({ card_id = "c2", rating = 1, reviewed_at = now, elapsed_ms = 1000, state_before = "review", state_after = "review" })
+      store:mark_lost("c1")
+      store:mark_lost("c2")
+
+      store:delete_all_orphans()
+
+      local today = store:get_daily_stats(1)[1]
+      assert.equals(0, today.new_count)
+      assert.equals(0, today.review_count)
     end)
   end)
 
@@ -1215,6 +1245,13 @@ describe("storage", function()
       assert.equals(2, stats.total_reviews)
       assert.is_number(stats.retention_rate)
       assert.equals(4000, stats.avg_time_ms)
+    end)
+
+    it("gets today's new-card count", function()
+      local now = utils.now()
+      store:upsert_card({ id = "c1", file_path = "a.md", line = 1, front = "Q1", back = "A1", tags = {} })
+      store:add_review({ card_id = "c1", rating = 1, reviewed_at = now, elapsed_ms = 1000, state_before = "new", state_after = "learning" })
+      assert.equals(1, store:get_daily_new_count(now))
     end)
 
     it("get_daily_stats returns per-day data", function()

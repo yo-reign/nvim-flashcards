@@ -233,9 +233,10 @@ function FSRS:schedule(card_state, rating, now, opts)
     local lapses = card_state.lapses or 0
     local learning_step = card_state.learning_step or 0
 
-    -- Calculate elapsed days since last review
+    -- Calculate elapsed days since last review. Clock rollback or imported
+    -- future timestamps must not be mistaken for a long successful delay.
     local elapsed_days = 0
-    if last_review then
+    if last_review and now > last_review then
         elapsed_days = utils.days_between(last_review, now)
     end
 
@@ -278,9 +279,15 @@ function FSRS:schedule(card_state, rating, now, opts)
             local max_steps = #self.weights.learning_steps
 
             if next_step >= max_steps then
-                -- Graduated to review — use correct initial stability as base, not
-                -- the learning-phase stability (which may be 0.5d from a wrong first rating)
-                local grad_stability = math.max(stability, self:init_stability(M.Rating.Correct))
+                -- New cards may have only 0.5d stability after an initial miss,
+                -- so give learning graduation the correct-answer baseline. A
+                -- relearning card must instead retain the stability left by its
+                -- lapse; otherwise a weak forgotten card is inflated to new-card
+                -- stability before it graduates.
+                local grad_stability = stability
+                if state == M.State.Learning then
+                    grad_stability = math.max(stability, self:init_stability(M.Rating.Correct))
+                end
                 new_state.status = M.State.Review
                 new_state.stability = self:next_recall_stability(difficulty, grad_stability, r)
                 new_state.difficulty = self:next_difficulty(difficulty, rating)
@@ -339,7 +346,7 @@ function FSRS:schedule(card_state, rating, now, opts)
         and not used_graduation_cap
         and new_state.status == M.State.Review
         and intervals.days >= 1 then
-        intervals.days = self:fuzz_interval(intervals.days)
+        intervals.days = math.min(self.maximum_interval, self:fuzz_interval(intervals.days))
     end
 
     -- Calculate due date

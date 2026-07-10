@@ -82,7 +82,7 @@ local function reload_buffers(file_path)
     for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
       if vim.api.nvim_buf_is_loaded(bufnr) then
         local buf_name = vim.api.nvim_buf_get_name(bufnr)
-        if buf_name == file_path then
+        if utils.canonical_path(buf_name) == file_path then
           vim.api.nvim_buf_call(bufnr, function()
             vim.cmd("checktime")
           end)
@@ -90,6 +90,38 @@ local function reload_buffers(file_path)
       end
     end
   end)
+end
+
+--- Whether a legacy root-relative path maps to only one configured source file.
+--- Ambiguous legacy paths must not drive destructive per-file orphan detection.
+local function legacy_path_is_unambiguous(rel_path, source_path, directories)
+  if not directories then
+    return true
+  end
+
+  local matches = 0
+  for _, dir in ipairs(directories) do
+    local root = utils.canonical_path(dir)
+    local candidate = utils.canonical_path(root .. "/" .. rel_path)
+    if vim.fn.filereadable(candidate) == 1 and utils.is_subpath(candidate, root) then
+      matches = matches + 1
+    end
+  end
+  return matches <= 1
+end
+
+--- Preserve free-form source refs written by the short-lived legacy parser only
+--- when the existing card proves that the prefix was previously metadata.
+local function preserve_legacy_source_ref(card, existing)
+  if card.note ~= nil or not existing then
+    return
+  end
+
+  local ref, clean_front = utils.extract_legacy_source_ref(card.front)
+  if ref and existing.note == ref and existing.front == clean_front then
+    card.front = clean_front
+    card.note = ref
+  end
 end
 
 -- ============================================================================
@@ -102,8 +134,10 @@ end
 --- @param file_path string absolute path to the markdown file
 --- @param store table storage backend instance
 --- @param scan_root string the scan root directory (for relative path computation)
---- @return table result { cards_found, cards_new, ids_written, errors, card_ids }
-function M.scan_file(file_path, store, scan_root)
+--- @param opts table|nil { directories=string[] } for legacy path compatibility
+--- @return table result { cards_found, cards_new, ids_written, errors, card_ids, can_mark_orphans }
+function M.scan_file(file_path, store, scan_root, opts)
+  opts = opts or {}
   local result = {
     cards_found = 0,
     cards_new = 0,
@@ -111,28 +145,42 @@ function M.scan_file(file_path, store, scan_root)
     ids_written = 0,
     errors = {},
     card_ids = {},
+    can_mark_orphans = false,
   }
 
+  local source_path = utils.canonical_path(file_path)
+  local canonical_root = utils.canonical_path(scan_root)
+  if not utils.is_subpath(source_path, canonical_root) then
+    result.errors[#result.errors + 1] = {
+      file = source_path,
+      message = "File is outside the configured scan root",
+    }
+    return result
+  end
+
   -- Read file content
-  local content, read_err = utils.read_file(file_path)
+  local content, read_err = utils.read_file(source_path)
   if not content then
     result.errors[#result.errors + 1] = {
-      file = file_path,
+      file = source_path,
       message = "Failed to read file: " .. (read_err or "unknown error"),
     }
     return result
   end
 
-  -- Compute relative path for the parser
-  local rel_path = utils.relative_path(file_path, scan_root)
+  -- Keep parser input root-relative for template expansion, but persist the
+  -- canonical source path so identically named files in different roots cannot
+  -- collide in storage.
+  local rel_path = utils.relative_path(source_path, canonical_root)
 
   -- First parse: identify cards and which need IDs
-  local cards, parse_errors = parser.parse(rel_path, content, scan_root)
+  local cards, parse_errors = parser.parse(rel_path, content, canonical_root)
+  result.can_mark_orphans = #parse_errors == 0
 
   -- Collect parse errors into result
   for _, err in ipairs(parse_errors) do
     result.errors[#result.errors + 1] = {
-      file = file_path,
+      file = source_path,
       line = err.line,
       message = err.message,
     }
@@ -148,10 +196,11 @@ function M.scan_file(file_path, store, scan_root)
     if content:sub(-1) == "\n" then
       new_content = new_content .. "\n"
     end
-    local ok, write_err = utils.write_file(file_path, new_content)
+    local ok, write_err = utils.write_file(source_path, new_content)
     if not ok then
+      result.can_mark_orphans = false
       result.errors[#result.errors + 1] = {
-        file = file_path,
+        file = source_path,
         message = "Failed to write IDs: " .. (write_err or "unknown error"),
       }
       return result
@@ -161,20 +210,23 @@ function M.scan_file(file_path, store, scan_root)
 
     -- Re-parse the updated file so all cards now have IDs
     content = new_content
-    rel_path = utils.relative_path(file_path, scan_root)
-    cards, parse_errors = parser.parse(rel_path, content, scan_root)
+    rel_path = utils.relative_path(source_path, canonical_root)
+    cards, parse_errors = parser.parse(rel_path, content, canonical_root)
+    if #parse_errors > 0 then
+      result.can_mark_orphans = false
+    end
 
     -- Collect any new parse errors (shouldn't happen, but be safe)
     for _, err in ipairs(parse_errors) do
       result.errors[#result.errors + 1] = {
-        file = file_path,
+        file = source_path,
         line = err.line,
         message = err.message,
       }
     end
 
     -- Reload open buffers
-    reload_buffers(file_path)
+    reload_buffers(source_path)
   end
 
   result.cards_found = #cards
@@ -193,9 +245,10 @@ function M.scan_file(file_path, store, scan_root)
     for _, card in ipairs(cards) do
       if card.id then
         local existing = store:get_card(card.id)
+        preserve_legacy_source_ref(card, existing)
         store:upsert_card({
           id = card.id,
-          file_path = rel_path,
+          file_path = source_path,
           line = card.line,
           front = card.front,
           back = card.back,
@@ -212,11 +265,23 @@ function M.scan_file(file_path, store, scan_root)
       end
     end
 
-    -- Per-file orphan detection: check stored cards for this file_path
-    local stored_cards = store:get_cards_by_file(rel_path)
-    for _, stored in ipairs(stored_cards) do
-      if stored.active and not found_ids[stored.id] then
-        store:mark_lost(stored.id)
+    -- Never make destructive orphan decisions from malformed input. During the
+    -- path rollout, match the old relative key only when it is unambiguous.
+    if result.can_mark_orphans then
+      local paths = { source_path }
+      if legacy_path_is_unambiguous(rel_path, source_path, opts.directories) then
+        paths[#paths + 1] = rel_path
+      end
+      local stored_cards
+      if store.get_cards_by_file_paths then
+        stored_cards = store:get_cards_by_file_paths(paths)
+      else
+        stored_cards = store:get_cards_by_file(source_path)
+      end
+      for _, stored in ipairs(stored_cards) do
+        if stored.active and not found_ids[stored.id] then
+          store:mark_lost(stored.id)
+        end
       end
     end
   end
@@ -324,35 +389,51 @@ function M.scan(dirs, store, config)
     errors = {},
   }
 
-  -- Collect all found card IDs across all files
+  -- Collect all found card IDs across all files. Canonicalization prevents
+  -- duplicate scans when configured roots overlap or are symlink aliases.
   local all_found_ids = {}
-
+  local canonical_dirs = {}
   for _, dir in ipairs(dirs) do
-    local files = M.find_files(dir, config)
+    canonical_dirs[#canonical_dirs + 1] = utils.canonical_path(dir)
+  end
+
+  local scanned_paths = {}
+  local can_mark_global_orphans = true
+  for _, scan_root in ipairs(canonical_dirs) do
+    local files = M.find_files(scan_root, config)
 
     for _, file_path in ipairs(files) do
-      report.files_scanned = report.files_scanned + 1
+      local source_path = utils.canonical_path(file_path)
+      if not scanned_paths[source_path] then
+        scanned_paths[source_path] = true
+        report.files_scanned = report.files_scanned + 1
 
-      local file_result = M.scan_file(file_path, store, dir)
+        local file_result = M.scan_file(source_path, store, scan_root, { directories = canonical_dirs })
 
-      report.cards_found = report.cards_found + file_result.cards_found
-      report.cards_new = report.cards_new + (file_result.cards_new or 0)
-      report.cards_updated = report.cards_updated + (file_result.cards_updated or 0)
+        report.cards_found = report.cards_found + file_result.cards_found
+        report.cards_new = report.cards_new + (file_result.cards_new or 0)
+        report.cards_updated = report.cards_updated + (file_result.cards_updated or 0)
+        if not file_result.can_mark_orphans then
+          can_mark_global_orphans = false
+        end
 
-      -- Collect found IDs for global orphan detection
-      for _, id in ipairs(file_result.card_ids) do
-        all_found_ids[id] = true
-      end
+        -- Collect found IDs for global orphan detection
+        for _, id in ipairs(file_result.card_ids) do
+          all_found_ids[id] = true
+        end
 
-      -- Accumulate errors
-      for _, err in ipairs(file_result.errors) do
-        report.errors[#report.errors + 1] = err
+        -- Accumulate errors
+        for _, err in ipairs(file_result.errors) do
+          report.errors[#report.errors + 1] = err
+        end
       end
     end
   end
 
-  -- Global orphan detection
-  report.orphans_found = M.mark_orphans(store, all_found_ids)
+  -- A partial or malformed scan must never hide cards from an unrelated file.
+  if can_mark_global_orphans then
+    report.orphans_found = M.mark_orphans(store, all_found_ids)
+  end
 
   -- Save storage after full scan
   store:save()

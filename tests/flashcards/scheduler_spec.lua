@@ -102,6 +102,16 @@ describe("scheduler", function()
       return persisted.id
     end
 
+    function store:get_daily_new_count()
+      local count = 0
+      for _, review in ipairs(self._reviews) do
+        if review.state_before == "new" then
+          count = count + 1
+        end
+      end
+      return count
+    end
+
     function store:remove_review(review_id, card_id)
       for i, review in ipairs(self._reviews) do
         if review.id == review_id and (not card_id or review.card_id == card_id) then
@@ -341,6 +351,37 @@ describe("scheduler", function()
       assert.equals(3, new_count)
       -- Total should be 3 new + 1 review = 4
       assert.equals(4, #session.queue)
+    end)
+
+    it("shares the new-card allowance across sessions and restores it on undo", function()
+      local cards = {}
+      local states = {}
+      for i = 1, 4 do
+        local id = "new" .. i
+        cards[#cards + 1] = { id = id, front = "Q" .. i, back = "A" .. i, tags = {}, reversible = false }
+        states[id] = { status = "new", stability = 0, difficulty = 0, reps = 0, lapses = 0,
+                       learning_step = 0, elapsed_days = 0, scheduled_days = 0 }
+      end
+
+      local store = make_mock_store(cards, states)
+      local fsrs = make_mock_fsrs()
+      local first = scheduler.new_session(store, fsrs, { new_cards_per_day = 2 })
+      first:load_cards()
+      assert.equals(2, #first.queue)
+
+      first:next_card()
+      first:answer(1)
+      first:next_card()
+      first:answer(1)
+
+      local second = scheduler.new_session(store, fsrs, { new_cards_per_day = 2 })
+      second:load_cards()
+      assert.equals(0, #second.queue)
+
+      assert.is_true(first:undo())
+      local third = scheduler.new_session(store, fsrs, { new_cards_per_day = 2 })
+      third:load_cards()
+      assert.equals(1, #third.queue)
     end)
   end)
 

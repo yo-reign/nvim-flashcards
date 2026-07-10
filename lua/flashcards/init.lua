@@ -156,7 +156,7 @@ function M._setup_autocommands()
       -- Scan just this file
       local scanner = require("flashcards.scanner")
       local store = get_store()
-      scanner.scan_file(file_path, store, scan_root)
+      scanner.scan_file(file_path, store, scan_root, { directories = config.options.directories })
       store:save()
     end,
   })

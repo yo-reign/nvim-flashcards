@@ -146,13 +146,19 @@ Definition or explanation here
 
 ### Source References
 
-Prefix a card front with a textbook/source location to record where it came from:
+Prefix a card front with a textbook/source location to record where it came from. Numeric section references are recognized directly:
 
 ```markdown
 (1.2.3:5) What is the quadratic formula? ::: x = (-b +/- sqrt(b^2 - 4ac)) / 2a #math
 ```
 
-For fenced cards, put the source ref at the start of the front:
+For other source descriptions, use the explicit `ref:` marker. This avoids treating ordinary prompt text such as `(True/False)` as metadata:
+
+```markdown
+(ref: Lang, Algebra I, §2) What does the theorem say? ::: It says ... #math
+```
+
+For fenced cards, put either form at the start of the front:
 
 ```markdown
 :::card
@@ -164,7 +170,7 @@ It says ...
 
 The prefix stays in your markdown file, but review/search stores the cleaned front (`What is the quadratic formula?`) and shows the source ref as a footnote when `config.ui.show_note = true`.
 
-Legacy `<!-- note: ... -->` comments are still parsed for existing cards, but new source locations should use leading `(section:paragraph)` prefixes.
+Legacy `<!-- note: ... -->` comments are still parsed for existing cards. Existing free-form parenthesized refs that were already stored as notes remain compatible when their source files are rescanned; use `(ref: ...)` for new ones.
 
 ### Suspended Cards
 
@@ -336,15 +342,35 @@ Card state is stored in a SQLite database (`flashcards.db`). The backend uses SQ
 
 The database location is controlled by `db_path` in your config. If `db_path` is a directory, `flashcards.db` is created inside it.
 
-**Upgrade from JSON:** remove `storage = "json"` from your config or change it to `"sqlite"`. On first open, if the new empty database has a sibling legacy JSON file (for example `flashcards.json` next to `flashcards.db`), nvim-flashcards imports readable cards and reviews once and leaves the JSON file untouched as a backup. If the JSON file is malformed, startup fails loudly instead of silently creating an empty history.
+### Existing SQLite databases
+
+No SQL migration is required for this release. New scans store each card's
+canonical absolute source path so files with the same relative name in different
+configured directories cannot collide. Existing root-relative rows are upgraded
+**only** when the scanner finds the same `<!-- fc:id -->` in a source file; the
+card ID, FSRS state, and review history are preserved. No bulk path rewrite is
+performed because it could associate old records with the wrong root.
+
+As with any database upgrade, back up `flashcards.db`, then run
+`:FlashcardsScan` once after updating. Orphaned records whose source no longer
+exists intentionally retain their old path as historical metadata.
+
+**Upgrade from JSON:** remove `storage = "json"` from your config or change it
+to `"sqlite"`. On first open, if the new empty database has a sibling legacy
+JSON file (for example `flashcards.json` next to `flashcards.db`),
+nvim-flashcards imports readable cards and reviews once and leaves the JSON
+file untouched as a backup. If the JSON file is malformed, startup fails loudly
+instead of silently creating an empty history.
 
 ### Orphan Management
 
-When a card's ID disappears from your files (deleted, moved outside scan dirs), it becomes "orphaned":
+When a card's ID disappears from your files (deleted or moved outside scan
+roots), it becomes "orphaned":
 
 - The card is **soft-deleted** (`active: false`) - review history is preserved
 - If the same ID reappears later, the card is **automatically reactivated**
-- Use `:FlashcardsOrphans` to permanently delete or manually reactivate orphaned cards
+- Use `:FlashcardsOrphans` to permanently delete or manually reactivate
+  orphaned cards
 
 ### Learning Phase
 
