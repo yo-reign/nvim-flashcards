@@ -54,8 +54,9 @@ end
 --- @param store table storage backend instance
 --- @return string[] lines
 function M.render_stats(store)
-  local stats = store:get_stats()
-  local tag_list = store:get_all_tags()
+  local new_cards_per_day = config.options.session.new_cards_per_day
+  local stats = store:get_stats(new_cards_per_day)
+  local tag_list = store:get_all_tags(new_cards_per_day)
   local lines = {}
 
   -- Overview section
@@ -68,20 +69,24 @@ function M.render_stats(store)
   table.insert(lines, string.format("  - Relearning: %d", stats.by_state.relearning or 0))
   table.insert(lines, "")
 
-  -- Due today
-  table.insert(lines, "# Due Today")
+  -- Cards available under today's new-card policy
+  table.insert(lines, "# Available Now")
   table.insert(lines, "")
-  table.insert(lines, string.format("Total Due: %d", stats.due.total or 0))
+  table.insert(lines, string.format("Total Available: %d", stats.due.total or 0))
   table.insert(lines, string.format("  - New: %d", stats.due.new or 0))
   table.insert(lines, string.format("  - Learning: %d", stats.due.learning or 0))
+  table.insert(lines, string.format("  - Relearning: %d", stats.due.relearning or 0))
   table.insert(lines, string.format("  - Review: %d", stats.due.review or 0))
+  if (stats.due.deferred_new or 0) > 0 then
+    table.insert(lines, string.format("  - New deferred by daily limit: %d", stats.due.deferred_new))
+  end
   table.insert(lines, "")
 
   -- Performance
   table.insert(lines, "# Performance")
   table.insert(lines, "")
-  table.insert(lines, string.format("Total Reviews: %d", stats.total_reviews or 0))
-  table.insert(lines, string.format("Retention Rate: %.1f%%", (stats.retention_rate or 0) * 100))
+  table.insert(lines, string.format("Total Answers: %d", stats.total_reviews or 0))
+  table.insert(lines, string.format("Answer Accuracy: %.1f%%", (stats.answer_accuracy or 0) * 100))
   table.insert(lines, string.format("Current Streak: %d days", stats.streak or 0))
   if (stats.avg_time_ms or 0) > 0 then
     table.insert(lines, string.format("Avg. Time/Card: %.1fs", stats.avg_time_ms / 1000))
@@ -169,7 +174,7 @@ end
 --- @param store table storage backend instance
 --- @return string statusline text (empty if nothing is due)
 function M.statusline(store)
-  local counts = store:count_due()
+  local counts = store:count_due(config.options.session.new_cards_per_day)
   if counts.total > 0 then
     return string.format(" %d", counts.total)
   end

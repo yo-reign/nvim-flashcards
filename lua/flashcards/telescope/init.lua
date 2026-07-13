@@ -255,9 +255,17 @@ end
 function M.due(store, opts)
   opts = opts or {}
 
-  local cards = store:get_due_cards()
+  local new_cards_per_day = config.options.session.new_cards_per_day
+  local cards, availability = store:get_due_cards(nil, new_cards_per_day)
   if #cards == 0 then
-    vim.notify("No cards due for review", vim.log.levels.INFO)
+    if availability and availability.deferred_new > 0 then
+      vim.notify(string.format(
+        "Daily new-card limit reached; %d new cards are deferred.",
+        availability.deferred_new
+      ), vim.log.levels.INFO)
+    else
+      vim.notify("No cards available for review", vim.log.levels.INFO)
+    end
     return
   end
 
@@ -272,8 +280,11 @@ function M.due(store, opts)
     attach_mappings = function(prompt_bufnr, map)
       -- Default action: start review session
       actions.select_default:replace(function()
+        local entry = action_state.get_selected_entry()
         actions.close(prompt_bufnr)
-        require("flashcards.ui.review").start(store)
+        if entry and entry.value then
+          require("flashcards.ui.review").start(store, nil, { priority_card_id = entry.value.id })
+        end
       end)
 
       -- <C-e>: edit card source
@@ -311,7 +322,7 @@ end
 function M.tags(store, opts)
   opts = opts or {}
 
-  local all_tags = store:get_all_tags()
+  local all_tags = store:get_all_tags(config.options.session.new_cards_per_day)
   if #all_tags == 0 then
     vim.notify("No tags found", vim.log.levels.INFO)
     return

@@ -20,7 +20,9 @@ local utils = require("flashcards.utils")
 --- @field reversed_map table<string, boolean> persisted reversed state per card_id
 --- @field start_time number session start timestamp
 --- @field tag string|nil optional tag filter
---- @field new_cards_limit number max new cards per session
+--- @field new_cards_limit number|false|nil max new cards per day; false/nil is unlimited
+--- @field priority_card_id string|nil card to move to the front when it is available
+--- @field deferred_new_count number new cards excluded by today's configured cap
 local Session = {}
 Session.__index = Session
 
@@ -66,7 +68,7 @@ end
 --- Create a new review session.
 --- @param store table storage backend instance
 --- @param fsrs table FSRS scheduler instance
---- @param opts table|nil options: { tag, new_cards_per_day }
+--- @param opts table|nil options: { tag, new_cards_per_day, priority_card_id }
 --- @return Session
 function M.new_session(store, fsrs, opts)
   opts = opts or {}
@@ -80,9 +82,8 @@ function M.new_session(store, fsrs, opts)
   self.start_time = utils.now()
   self.tag = opts.tag or nil
   self.new_cards_limit = opts.new_cards_per_day
-  if self.new_cards_limit == nil then
-    self.new_cards_limit = 20
-  end
+  self.priority_card_id = opts.priority_card_id
+  self.deferred_new_count = 0
   self.initial_count = 0
   return self
 end
@@ -95,7 +96,9 @@ end
 --- Queue order: learning/relearning cards first (sorted by due_date),
 --- then interleaved new + review cards. New cards limited to new_cards_per_day.
 function Session:load_cards()
-  local due = self.store:get_due_cards(self.tag)
+  local due, availability = self.store:get_due_cards(self.tag, self.new_cards_limit)
+  availability = availability or {}
+  self.deferred_new_count = availability.deferred_new or 0
 
   -- Separate by state type
   local learning = {} -- learning + relearning (short intervals)
@@ -115,19 +118,8 @@ function Session:load_cards()
     end
   end
 
-  -- Limit new cards across the entire calendar day, not merely this session.
-  local introduced_today = 0
-  if self.store.get_daily_new_count then
-    introduced_today = self.store:get_daily_new_count()
-  end
-  local remaining_new = math.max(0, self.new_cards_limit - introduced_today)
-  if #new > remaining_new then
-    local limited = {}
-    for i = 1, remaining_new do
-      limited[i] = new[i]
-    end
-    new = limited
-  end
+  -- The storage query applies the configured daily new-card policy so every
+  -- caller (session, stats, and Telescope) shares the same availability rules.
 
   -- Build queue
   self.queue = {}
@@ -151,6 +143,18 @@ function Session:load_cards()
     if ni <= #new then
       table.insert(self.queue, new[ni])
       ni = ni + 1
+    end
+  end
+
+  -- Telescope's Due picker can request that its selected, already-available
+  -- card is shown first. Never inject a card excluded by due/tag/cap policy.
+  if self.priority_card_id then
+    for index, card in ipairs(self.queue) do
+      if card.id == self.priority_card_id then
+        table.remove(self.queue, index)
+        table.insert(self.queue, 1, card)
+        break
+      end
     end
   end
 
@@ -287,6 +291,7 @@ function Session:answer(rating, elapsed_ms)
   -- spacing interval and caused immediate same-session repeats.
   local final_status = new_state.status
   local due_at = new_state.due_date or utils.add_days(now, intervals.days)
+  local requeued = false
   if (final_status == "learning" or final_status == "relearning")
     and intervals.days <= REQUEUE_THRESHOLD_DAYS
     and due_at <= now then
@@ -295,7 +300,16 @@ function Session:answer(rating, elapsed_ms)
     local spacing = math.max(2, math.min(8, math.floor(remaining * 0.5)))
     local insert_pos = math.min(self.current_idx + spacing + 1, #self.queue + 1)
     table.insert(self.queue, insert_pos, card)
+    requeued = true
   end
+
+  return {
+    state = new_state,
+    intervals = intervals,
+    due_at = due_at,
+    deferred = (final_status == "learning" or final_status == "relearning") and due_at > now,
+    requeued = requeued,
+  }
 end
 
 -- ============================================================================
@@ -415,7 +429,7 @@ end
 -- ============================================================================
 
 --- Get a summary of the current session.
---- @return table summary { total, reviewed, correct, wrong, new_seen, elapsed, elapsed_formatted, retention_rate }
+--- @return table summary { total, reviewed, correct, wrong, new_seen, elapsed, elapsed_formatted, answer_accuracy }
 function Session:summary()
   local total = self.initial_count > 0 and self.initial_count or #self.queue
   local reviewed = #self.reviews
@@ -439,9 +453,9 @@ function Session:summary()
   local elapsed_seconds = elapsed % 60
   local elapsed_formatted = string.format("%dm %ds", elapsed_minutes, elapsed_seconds)
 
-  local retention_rate = 0
+  local answer_accuracy = 0
   if reviewed > 0 then
-    retention_rate = correct / reviewed
+    answer_accuracy = correct / reviewed
   end
 
   return {
@@ -452,7 +466,8 @@ function Session:summary()
     new_seen = new_seen,
     elapsed = elapsed,
     elapsed_formatted = elapsed_formatted,
-    retention_rate = retention_rate,
+    answer_accuracy = answer_accuracy,
+    retention_rate = answer_accuracy, -- Deprecated compatibility alias.
   }
 end
 

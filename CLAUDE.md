@@ -445,9 +445,9 @@ require("flashcards").setup({
         },
     },
 
-    -- Session limits
+    -- New-card policy
     session = {
-        new_cards_per_day = 20,
+        new_cards_per_day = false, -- unlimited; use an integer for a daily cap
     },
 
     -- Auto-sync on file save

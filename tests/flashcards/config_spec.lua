@@ -16,7 +16,7 @@ describe("config", function()
       assert.equals(0.85, config.options.fsrs.target_correctness)
       assert.equals(365, config.options.fsrs.maximum_interval)
       assert.equals(3, config.options.fsrs.graduating_interval_days)
-      assert.equals(20, config.options.session.new_cards_per_day)
+      assert.is_false(config.options.session.new_cards_per_day)
       assert.equals(0.7, config.options.ui.width)
       assert.equals(0.6, config.options.ui.height)
       assert.equals("rounded", config.options.ui.border)
@@ -100,14 +100,67 @@ describe("config", function()
       assert.truthy(err:find("storage"))
     end)
 
-    it("returns false for out-of-range target_correctness", function()
+    it("accepts unlimited, zero, and positive integer new-card policies", function()
+      for _, value in ipairs({ false, 0, 25 }) do
+        config.setup({
+          directories = { "/tmp/test-notes" },
+          session = { new_cards_per_day = value },
+        })
+        local ok, err = config.validate()
+        assert.is_true(ok, tostring(err))
+      end
+    end)
+
+    it("rejects malformed new-card policies", function()
+      for _, value in ipairs({ true, "20", -1, 1.5, 0 / 0, math.huge, -math.huge }) do
+        config.setup({
+          directories = { "/tmp/test-notes" },
+          session = { new_cards_per_day = value },
+        })
+        local ok, err = config.validate()
+        assert.is_false(ok)
+        assert.truthy(err:find("session.new_cards_per_day", 1, true))
+      end
+    end)
+
+    it("returns false for invalid target_correctness values", function()
+      for _, value in ipairs({ 0.5, 0.98, false, "0.85", 0 / 0, math.huge }) do
+        config.setup({
+          directories = { "/tmp/test-notes" },
+          fsrs = { target_correctness = value },
+        })
+        local ok, err = config.validate()
+        assert.is_false(ok)
+        assert.truthy(err:find("target_correctness", 1, true))
+      end
+    end)
+
+    it("validates learning steps", function()
+      local invalid_steps = {
+        {},
+        { [1] = 1, [3] = 60 },
+        { first = 1 },
+        { 0 },
+        { -1 },
+        { "10" },
+        { 0 / 0 },
+        { math.huge },
+      }
+      for _, steps in ipairs(invalid_steps) do
+        config.setup({
+          directories = { "/tmp/test-notes" },
+          fsrs = { weights = { learning_steps = steps } },
+        })
+        local ok, err = config.validate()
+        assert.is_false(ok)
+        assert.truthy(err:find("fsrs.weights.learning_steps", 1, true))
+      end
+
       config.setup({
         directories = { "/tmp/test-notes" },
-        fsrs = { target_correctness = 0.5 },
+        fsrs = { weights = { learning_steps = { 0.5, 10, 60 } } },
       })
-      local ok, err = config.validate()
-      assert.is_false(ok)
-      assert.truthy(err:find("target_correctness"))
+      assert.is_true(config.validate())
     end)
 
     it("accepts false to disable graduation interval cap", function()

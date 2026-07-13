@@ -222,7 +222,7 @@ local function render_complete()
   table.insert(lines, string.format("  Correct:          %d", summary.correct))
   table.insert(lines, string.format("  Wrong:            %d", summary.wrong))
   table.insert(lines, string.format("  New cards seen:   %d", summary.new_seen))
-  table.insert(lines, string.format("  Retention rate:   %s", components.percentage(summary.retention_rate)))
+  table.insert(lines, string.format("  Answer accuracy:  %s", components.percentage(summary.answer_accuracy)))
   table.insert(lines, string.format("  Time elapsed:     %s", summary.elapsed_formatted))
   table.insert(lines, "")
   table.insert(lines, "  " .. string.rep("\u{2500}", 40))
@@ -465,23 +465,33 @@ end
 --- Creates a scheduler session, builds the review queue, and opens the floating window.
 --- @param store table storage backend instance
 --- @param tag string|nil optional tag filter
-function M.start(store, tag)
+--- @param start_opts table|nil options: { priority_card_id }
+function M.start(store, tag, start_opts)
   -- Prevent opening multiple review sessions
   if state.session then
     vim.notify("A review session is already active", vim.log.levels.WARN)
     return
   end
 
+  start_opts = start_opts or {}
   local fsrs_instance = fsrs.new(config.options.fsrs)
   local opts = {
     tag = tag,
     new_cards_per_day = config.options.session.new_cards_per_day,
+    priority_card_id = start_opts.priority_card_id,
   }
   state.session = scheduler.new_session(store, fsrs_instance, opts)
   state.session:load_cards()
 
   if #state.session.queue == 0 then
-    vim.notify("No cards due for review!", vim.log.levels.INFO)
+    if state.session.deferred_new_count > 0 then
+      vim.notify(string.format(
+        "Daily new-card limit reached; %d new cards are deferred.",
+        state.session.deferred_new_count
+      ), vim.log.levels.INFO)
+    else
+      vim.notify("No cards available for review!", vim.log.levels.INFO)
+    end
     state.session = nil
     return
   end
@@ -508,6 +518,25 @@ function M.show_answer()
   end
 end
 
+--- Format the informational message for a future learning/relearning step.
+--- @param result table|nil scheduling result returned by Session:answer
+--- @return string|nil message
+function M.deferred_step_message(result)
+  if not result or not result.deferred or not result.state or not result.intervals then
+    return nil
+  end
+  local status = result.state.status
+  local formatted = result.intervals.formatted
+  if not status or not formatted then
+    return nil
+  end
+  return string.format(
+    "Next %s step is due in %s; start review again after it is due.",
+    fsrs.state_name(status),
+    formatted
+  )
+end
+
 --- Answer the current card with a rating.
 --- If the answer is not yet showing, reveals it instead.
 --- @param rating number 0 (Wrong/false) or 1 (Correct/true)
@@ -525,7 +554,11 @@ function M.answer(rating)
   if state.card_shown_at then
     elapsed_ms = math.floor((vim.loop.hrtime() - state.card_shown_at) / 1e6)
   end
-  state.session:answer(rating, elapsed_ms)
+  local result = state.session:answer(rating, elapsed_ms)
+  local deferred_message = M.deferred_step_message(result)
+  if deferred_message then
+    vim.notify(deferred_message, vim.log.levels.INFO)
+  end
 
   if state.session:next_card() then
     state.showing_answer = false
@@ -627,7 +660,7 @@ function M.close()
           "Session: %d cards reviewed in %s (%s correct)",
           summary.reviewed,
           summary.elapsed_formatted,
-          components.percentage(summary.retention_rate)
+          components.percentage(summary.answer_accuracy)
         ),
         vim.log.levels.INFO
       )

@@ -315,9 +315,10 @@ require("flashcards").setup({
         },
     },
 
-    -- Session limits
+    -- New-card policy: false is unlimited (default).
+    -- Use a non-negative integer for a daily cap; 0 disables new cards.
     session = {
-        new_cards_per_day = 20,
+        new_cards_per_day = false,
     },
 
     -- Auto-sync cards when markdown files are saved
@@ -376,8 +377,8 @@ roots), it becomes "orphaned":
 
 New cards go through learning steps (1min, 10min, 1hour by default) before
 graduating to the regular review schedule. Future-due learning steps are not
-shown early in the same session; rerun review after the due time if you want to
-continue the same-day learning steps.
+shown early in the same session. The review UI reports when the next step is
+due; rerun review after that time to continue the same-day learning steps.
 
 ### Spaced Repetition
 

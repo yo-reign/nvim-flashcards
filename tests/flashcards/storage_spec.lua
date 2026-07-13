@@ -446,6 +446,41 @@ describe("storage", function()
       assert.equals("new1", due[1].id)
     end)
 
+    it("applies the remaining daily new-card allowance without excluding due reviews", function()
+      local now = utils.now()
+      for i = 1, 3 do
+        store:upsert_card({
+          id = "new" .. i,
+          file_path = "test.md",
+          line = i,
+          front = "Q" .. i,
+          back = "A" .. i,
+          tags = {},
+        })
+      end
+      store:upsert_card({ id = "rev1", file_path = "test.md", line = 4, front = "R", back = "A", tags = {} })
+      store:update_card_state("rev1", { status = "review", due_date = now - 1 })
+      store:add_review({
+        card_id = "new1",
+        rating = 1,
+        reviewed_at = now,
+        state_before = "new",
+        state_after = "learning",
+      })
+
+      local due, availability = store:get_due_cards(nil, 2)
+      assert.equals(2, #due)
+      assert.equals(3, availability.total_new)
+      assert.equals(1, availability.available_new)
+      assert.equals(2, availability.deferred_new)
+      local ids = {}
+      for _, card in ipairs(due) do ids[card.id] = true end
+      assert.is_true(ids.rev1)
+
+      local unlimited = store:get_due_cards(nil, false)
+      assert.equals(4, #unlimited)
+    end)
+
     it("returns cards with due_date in the past", function()
       store:upsert_card({
         id = "due1",
@@ -788,6 +823,63 @@ describe("storage", function()
       assert.equals(1, #tags)
       assert.equals(2, tags[1].count)
       assert.equals(1, tags[1].due_count)
+    end)
+
+    it("caps tag due counts using today's remaining new-card allowance", function()
+      local now = utils.now()
+      for i = 1, 3 do
+        store:upsert_card({
+          id = "new" .. i,
+          file_path = "test.md",
+          line = i,
+          front = "Q" .. i,
+          back = "A" .. i,
+          tags = { "math" },
+        })
+      end
+      store:upsert_card({
+        id = "rev1", file_path = "test.md", line = 4, front = "R", back = "A", tags = { "math" },
+      })
+      store:update_card_state("rev1", { status = "review", due_date = now - 1 })
+      store:add_review({
+        card_id = "new1", rating = 1, reviewed_at = now, state_before = "new", state_after = "learning",
+      })
+
+      local tags = store:get_all_tags(2)
+      assert.equals(2, tags[1].due_count)
+      assert.equals(2, tags[1].deferred_new_count)
+      assert.equals(4, store:get_all_tags(false)[1].due_count)
+    end)
+
+    it("aggregates child-only tags into parent availability", function()
+      local now = utils.now()
+      store:upsert_card({
+        id = "child_new", file_path = "test.md", line = 1, front = "N", back = "A", tags = { "math/calc" },
+      })
+      store:upsert_card({
+        id = "child_review", file_path = "test.md", line = 2, front = "R", back = "A", tags = { "math/algebra" },
+      })
+      store:upsert_card({
+        id = "parent_and_child",
+        file_path = "test.md",
+        line = 3,
+        front = "D",
+        back = "A",
+        tags = { "math", "math/calc" },
+      })
+      store:update_card_state("child_review", { status = "review", due_date = now - 1 })
+
+      local tags = store:get_all_tags(0)
+      local by_tag = {}
+      for _, item in ipairs(tags) do by_tag[item.tag] = item end
+
+      assert.is_not_nil(by_tag.math)
+      assert.equals(3, by_tag.math.count)
+      assert.equals(1, by_tag.math.due_count)
+      assert.equals(2, by_tag.math.deferred_new_count)
+      assert.equals(2, by_tag["math/calc"].count)
+      assert.equals(#store:get_due_cards("math", 0), by_tag.math.due_count)
+      assert.equals(3, store:get_all_tags(false)[1].due_count)
     end)
 
     it("returns due_count of 0 when no cards are due", function()
@@ -1216,17 +1308,28 @@ describe("storage", function()
       store:upsert_card({ id = "new1", file_path = "a.md", line = 1, front = "Q1", back = "A1", tags = {} })
       store:upsert_card({ id = "rev1", file_path = "a.md", line = 2, front = "Q2", back = "A2", tags = {} })
       store:upsert_card({ id = "lrn1", file_path = "a.md", line = 3, front = "Q3", back = "A3", tags = {} })
-      store:upsert_card({ id = "fut1", file_path = "a.md", line = 4, front = "Q4", back = "A4", tags = {} })
+      store:upsert_card({ id = "rln1", file_path = "a.md", line = 4, front = "Q4", back = "A4", tags = {} })
+      store:upsert_card({ id = "fut1", file_path = "a.md", line = 5, front = "Q5", back = "A5", tags = {} })
 
       store:update_card_state("rev1", { status = "review", due_date = now - 3600 })
       store:update_card_state("lrn1", { status = "learning", due_date = now - 60 })
+      store:update_card_state("rln1", { status = "relearning", due_date = now - 30 })
       store:update_card_state("fut1", { status = "review", due_date = now + 86400 })
 
       local counts = store:count_due()
-      assert.equals(3, counts.total)
+      assert.equals(4, counts.total)
       assert.equals(1, counts.new)
       assert.equals(1, counts.review)
       assert.equals(1, counts.learning)
+      assert.equals(1, counts.relearning)
+
+      local capped = store:count_due(0)
+      assert.equals(3, capped.total)
+      assert.equals(0, capped.new)
+      assert.equals(1, capped.deferred_new)
+      assert.equals(1, capped.review)
+      assert.equals(1, capped.learning)
+      assert.equals(1, capped.relearning)
     end)
 
     it("get_stats returns full statistics", function()
@@ -1243,7 +1346,8 @@ describe("storage", function()
       local stats = store:get_stats()
       assert.equals(2, stats.total_cards)
       assert.equals(2, stats.total_reviews)
-      assert.is_number(stats.retention_rate)
+      assert.equals(0.5, stats.answer_accuracy)
+      assert.equals(stats.answer_accuracy, stats.retention_rate)
       assert.equals(4000, stats.avg_time_ms)
     end)
 
@@ -1541,6 +1645,14 @@ describe("storage", function()
         note = "test note",
       })
       store:update_card_state("surv1", { status = "learning", stability = 2.0 })
+      store:add_review({
+        card_id = "surv1",
+        rating = 1,
+        reviewed_at = utils.now(),
+        elapsed_ms = 1200,
+        state_before = "new",
+        state_after = "learning",
+      })
 
       -- Close
       store:close()
@@ -1557,6 +1669,10 @@ describe("storage", function()
       local state = store:get_card_state("surv1")
       assert.equals("learning", state.status)
       assert.equals(2.0, state.stability)
+      assert.equals(1, #store:get_reviews("surv1"))
+      local today = store:get_daily_stats(1)[1]
+      assert.equals(1, today.new_count)
+      assert.equals(0, today.review_count)
     end)
   end)
 end)

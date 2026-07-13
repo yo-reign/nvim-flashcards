@@ -1109,12 +1109,24 @@ AND EXISTS (
 ]], { tag, tag .. "/%" }
 end
 
+--- Return today's remaining new-card allowance, or nil when unlimited.
+--- @param new_cards_per_day number|false|nil
+--- @return number|nil
+function SQLiteStore:_remaining_new_allowance(new_cards_per_day)
+  if new_cards_per_day == nil or new_cards_per_day == false then
+    return nil
+  end
+  return math.max(0, new_cards_per_day - self:get_daily_new_count())
+end
+
 --- Get cards that are due for review.
 --- A card is due if: status="new" OR (due_date <= now).
 --- Excludes suspended and inactive cards.
 --- @param tag string|nil optional tag filter (hierarchical matching)
+--- @param new_cards_per_day number|false|nil optional daily new-card cap; false/nil is unlimited
 --- @return table[] list of card tables
-function SQLiteStore:get_due_cards(tag)
+--- @return table availability { total_new, available_new, deferred_new }
+function SQLiteStore:get_due_cards(tag, new_cards_per_day)
   local tag_sql, tag_params = self:_tag_filter_sql(tag)
   local params = { utils.now() }
   for _, param in ipairs(tag_params) do
@@ -1127,11 +1139,26 @@ WHERE c.active = 1
   AND (s.status = 'new' OR (s.due_date IS NOT NULL AND s.due_date <= ?))
 ]] .. tag_sql .. " ORDER BY COALESCE(s.due_date, 0), c.file_path, c.line, c.id"), params)
 
+  local allowance = self:_remaining_new_allowance(new_cards_per_day)
   local result = {}
+  local total_new = 0
+  local available_new = 0
   for _, row in ipairs(rows) do
-    result[#result + 1] = self:_build_card(row)
+    if row.status == "new" then
+      total_new = total_new + 1
+      if allowance == nil or available_new < allowance then
+        available_new = available_new + 1
+        result[#result + 1] = self:_build_card(row)
+      end
+    else
+      result[#result + 1] = self:_build_card(row)
+    end
   end
-  return result
+  return result, {
+    total_new = total_new,
+    available_new = available_new,
+    deferred_new = total_new - available_new,
+  }
 end
 
 --- Get cards with status="new", active, not suspended.
@@ -1156,18 +1183,37 @@ end
 -- Tags
 -- ============================================================================
 
---- Get all tags with their card counts and due counts. Only counts active, non-suspended cards.
---- @return table[] list of { tag=string, count=number, due_count=number }
-function SQLiteStore:get_all_tags()
+--- Get all tags with active card counts and cap-aware available counts.
+--- @param new_cards_per_day number|false|nil optional daily new-card cap; false/nil is unlimited
+--- @return table[] list of { tag=string, count=number, due_count=number, deferred_new_count=number }
+function SQLiteStore:get_all_tags(new_cards_per_day)
   local rows = self:_query_all([[
+WITH RECURSIVE tag_paths(card_id, tag, rest) AS (
+  SELECT
+    card_id,
+    CASE WHEN instr(tag, '/') > 0 THEN substr(tag, 1, instr(tag, '/') - 1) ELSE tag END,
+    CASE WHEN instr(tag, '/') > 0 THEN substr(tag, instr(tag, '/') + 1) ELSE '' END
+  FROM card_tags
+  UNION
+  SELECT
+    card_id,
+    tag || '/' || CASE WHEN instr(rest, '/') > 0 THEN substr(rest, 1, instr(rest, '/') - 1) ELSE rest END,
+    CASE WHEN instr(rest, '/') > 0 THEN substr(rest, instr(rest, '/') + 1) ELSE '' END
+  FROM tag_paths
+  WHERE rest <> ''
+),
+expanded_tags AS (
+  SELECT DISTINCT card_id, tag FROM tag_paths
+)
 SELECT
   t.tag AS tag,
   COUNT(*) AS count,
+  COALESCE(SUM(CASE WHEN s.status = 'new' THEN 1 ELSE 0 END), 0) AS new_count,
   COALESCE(SUM(CASE
-    WHEN s.status = 'new' OR (s.due_date IS NOT NULL AND s.due_date <= ?) THEN 1
+    WHEN s.status <> 'new' AND s.due_date IS NOT NULL AND s.due_date <= ? THEN 1
     ELSE 0
-  END), 0) AS due_count
-FROM card_tags t
+  END), 0) AS non_new_due_count
+FROM expanded_tags t
 JOIN cards c ON c.id = t.card_id
 JOIN card_states s ON s.card_id = c.id
 WHERE c.active = 1 AND c.suspended = 0
@@ -1175,9 +1221,17 @@ GROUP BY t.tag
 ORDER BY t.tag
 ]], { utils.now() })
 
+  local allowance = self:_remaining_new_allowance(new_cards_per_day)
   local result = {}
   for _, row in ipairs(rows) do
-    result[#result + 1] = { tag = row.tag, count = row.count or 0, due_count = row.due_count or 0 }
+    local total_new = row.new_count or 0
+    local available_new = allowance == nil and total_new or math.min(total_new, allowance)
+    result[#result + 1] = {
+      tag = row.tag,
+      count = row.count or 0,
+      due_count = (row.non_new_due_count or 0) + available_new,
+      deferred_new_count = total_new - available_new,
+    }
   end
   return result
 end
@@ -1372,10 +1426,11 @@ GROUP BY s.status
   return counts
 end
 
---- Count cards currently due for review.
---- @return table { total=N, new=N, review=N, learning=N }
-function SQLiteStore:count_due()
-  local counts = { total = 0, new = 0, review = 0, learning = 0 }
+--- Count cards currently available for review under an optional new-card cap.
+--- @param new_cards_per_day number|false|nil optional daily new-card cap; false/nil is unlimited
+--- @return table { total=N, new=N, review=N, learning=N, relearning=N, deferred_new=N }
+function SQLiteStore:count_due(new_cards_per_day)
+  local counts = { total = 0, new = 0, review = 0, learning = 0, relearning = 0, deferred_new = 0 }
   local rows = self:_query_all([[
 SELECT s.status AS status, COUNT(*) AS count
 FROM card_states s
@@ -1388,23 +1443,24 @@ GROUP BY s.status
 
   for _, row in ipairs(rows) do
     local n = row.count or 0
-    counts.total = counts.total + n
     if row.status == "new" then
-      counts.new = counts.new + n
-    elseif row.status == "learning" then
-      counts.learning = counts.learning + n
-    elseif row.status == "review" or row.status == "relearning" then
-      counts.review = counts.review + n
+      local allowance = self:_remaining_new_allowance(new_cards_per_day)
+      counts.new = allowance == nil and n or math.min(n, allowance)
+      counts.deferred_new = n - counts.new
+    elseif counts[row.status] ~= nil then
+      counts[row.status] = counts[row.status] + n
     end
   end
+  counts.total = counts.new + counts.learning + counts.relearning + counts.review
   return counts
 end
 
 --- Get full statistics.
+--- @param new_cards_per_day number|false|nil optional daily new-card cap
 --- @return table stats
-function SQLiteStore:get_stats()
+function SQLiteStore:get_stats(new_cards_per_day)
   local state_counts = self:count_by_state()
-  local due_counts = self:count_due()
+  local due_counts = self:count_due(new_cards_per_day)
   local total = self:_query_one("SELECT COUNT(*) AS count FROM cards WHERE active = 1")
   local reviews = self:_query_one([[
 SELECT
@@ -1419,9 +1475,9 @@ FROM reviews
   local correct_count = reviews and reviews.correct_count or 0
   local total_time_ms = reviews and reviews.total_time_ms or 0
 
-  local retention_rate = 0
+  local answer_accuracy = 0
   if total_reviews > 0 then
-    retention_rate = correct_count / total_reviews
+    answer_accuracy = correct_count / total_reviews
   end
 
   local avg_time_ms = 0
@@ -1447,7 +1503,8 @@ FROM reviews
     by_state = state_counts,
     due = due_counts,
     total_reviews = total_reviews,
-    retention_rate = retention_rate,
+    answer_accuracy = answer_accuracy,
+    retention_rate = answer_accuracy, -- Deprecated compatibility alias.
     streak = streak,
     avg_time_ms = avg_time_ms,
   }

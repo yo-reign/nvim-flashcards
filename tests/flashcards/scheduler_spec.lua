@@ -51,17 +51,29 @@ describe("scheduler", function()
       _reviews = reviews_log,
     }
 
-    function store:get_due_cards(tag)
+    function store:get_due_cards(tag, new_cards_per_day)
       local now = mock_utils.now()
       local result = {}
+      local total_new = 0
+      local available_new = 0
+      local allowance = nil
+      if new_cards_per_day ~= nil and new_cards_per_day ~= false then
+        allowance = math.max(0, new_cards_per_day - self:get_daily_new_count())
+      end
+
       for _, card in ipairs(self._cards) do
         if not card.suspended then
           local state = self._states[card.id]
-          local is_due = (not state)
-            or state.status == "new"
-            or (state.due_date and state.due_date <= now)
-          if is_due then
-            if not tag or self:_matches_tag(card, tag) then
+          local status = state and state.status or "new"
+          local is_due = status == "new" or (state and state.due_date and state.due_date <= now)
+          if is_due and (not tag or self:_matches_tag(card, tag)) then
+            if status == "new" then
+              total_new = total_new + 1
+            end
+            if status ~= "new" or allowance == nil or available_new < allowance then
+              if status == "new" then
+                available_new = available_new + 1
+              end
               local c = deep_copy(card)
               c.state = deep_copy(state or { status = "new" })
               table.insert(result, c)
@@ -69,7 +81,11 @@ describe("scheduler", function()
           end
         end
       end
-      return result
+      return result, {
+        total_new = total_new,
+        available_new = available_new,
+        deferred_new = total_new - available_new,
+      }
     end
 
     function store:_matches_tag(card, query_tag)
@@ -317,6 +333,45 @@ describe("scheduler", function()
   -- ========================================================================
 
   describe("new card daily limit", function()
+    it("is unlimited by default and when explicitly false", function()
+      local cards, states = {}, {}
+      for i = 1, 25 do
+        local id = "new" .. i
+        cards[#cards + 1] = { id = id, front = "Q" .. i, back = "A" .. i, tags = {}, reversible = false }
+        states[id] = { status = "new" }
+      end
+      local store = make_mock_store(cards, states)
+      local fsrs = make_mock_fsrs()
+
+      local default_session = scheduler.new_session(store, fsrs)
+      default_session:load_cards()
+      assert.equals(25, #default_session.queue)
+
+      local explicit_session = scheduler.new_session(store, fsrs, { new_cards_per_day = false })
+      explicit_session:load_cards()
+      assert.equals(25, #explicit_session.queue)
+    end)
+
+    it("allows zero new cards while retaining due non-new cards", function()
+      local now = utils.now()
+      local cards = {
+        { id = "new1", front = "New", back = "A", tags = {} },
+        { id = "rev1", front = "Review", back = "A", tags = {} },
+      }
+      local states = {
+        new1 = { status = "new" },
+        rev1 = { status = "review", due_date = now - 1 },
+      }
+      local session = scheduler.new_session(make_mock_store(cards, states), make_mock_fsrs(), {
+        new_cards_per_day = 0,
+      })
+      session:load_cards()
+
+      assert.equals(1, #session.queue)
+      assert.equals("rev1", session.queue[1].id)
+      assert.equals(1, session.deferred_new_count)
+    end)
+
     it("limits new cards to new_cards_per_day", function()
       local now = utils.now()
       local cards = {}
@@ -389,6 +444,39 @@ describe("scheduler", function()
   -- Test: Answer (updates state via FSRS, records review)
   -- ========================================================================
 
+  describe("priority card", function()
+    it("moves an available selected card to the front", function()
+      local cards, states = make_test_cards()
+      local session = scheduler.new_session(make_mock_store(cards, states), make_mock_fsrs(), {
+        new_cards_per_day = false,
+        priority_card_id = "rev2",
+      })
+      session:load_cards()
+
+      assert.equals("rev2", session.queue[1].id)
+    end)
+
+    it("does not inject a selected card excluded by the daily cap", function()
+      local now = utils.now()
+      local cards = {
+        { id = "new1", front = "New", back = "A", tags = {} },
+        { id = "rev1", front = "Review", back = "A", tags = {} },
+      }
+      local states = {
+        new1 = { status = "new" },
+        rev1 = { status = "review", due_date = now - 1 },
+      }
+      local session = scheduler.new_session(make_mock_store(cards, states), make_mock_fsrs(), {
+        new_cards_per_day = 0,
+        priority_card_id = "new1",
+      })
+      session:load_cards()
+
+      assert.equals(1, #session.queue)
+      assert.equals("rev1", session.queue[1].id)
+    end)
+  end)
+
   describe("answer", function()
     it("updates card state via FSRS and records review", function()
       local now = utils.now()
@@ -456,7 +544,7 @@ describe("scheduler", function()
       session:next_card()
 
       local initial_queue_len = #session.queue
-      session:answer(1)
+      local result = session:answer(1)
 
       local count = 0
       for _, c in ipairs(session.queue) do
@@ -468,6 +556,9 @@ describe("scheduler", function()
       assert.equals(initial_queue_len, #session.queue)
       assert.equals(1, count, "future-due learning card should not get an extra queue copy")
       assert.is_true(store:get_card_state("card1").due_date > now)
+      assert.is_true(result.deferred)
+      assert.is_false(result.requeued)
+      assert.equals("10m", result.intervals.formatted)
     end)
 
     it("still re-queues learning cards that are already due", function()
@@ -497,7 +588,7 @@ describe("scheduler", function()
       session:load_cards()
       session:next_card()
 
-      session:answer(1)
+      local result = session:answer(1)
 
       local count = 0
       for _, c in ipairs(session.queue) do
@@ -507,6 +598,8 @@ describe("scheduler", function()
       end
 
       assert.equals(2, count, "already-due learning card should get one extra queue copy")
+      assert.is_false(result.deferred)
+      assert.is_true(result.requeued)
     end)
   end)
 
@@ -777,9 +870,10 @@ describe("scheduler", function()
       assert.equals(1, summary.wrong)
       assert.is_number(summary.elapsed)
       assert.is_string(summary.elapsed_formatted)
-      assert.is_number(summary.retention_rate)
-      -- retention_rate should be 2/3 ~ 0.667
-      assert.is_true(summary.retention_rate > 0.6 and summary.retention_rate < 0.7)
+      assert.is_number(summary.answer_accuracy)
+      assert.equals(summary.answer_accuracy, summary.retention_rate)
+      -- answer_accuracy should be 2/3 ~ 0.667
+      assert.is_true(summary.answer_accuracy > 0.6 and summary.answer_accuracy < 0.7)
     end)
 
     it("returns zeros for empty session", function()
@@ -794,7 +888,8 @@ describe("scheduler", function()
       assert.equals(0, summary.reviewed)
       assert.equals(0, summary.correct)
       assert.equals(0, summary.wrong)
-      assert.equals(0, summary.retention_rate)
+      assert.equals(0, summary.answer_accuracy)
+      assert.equals(summary.answer_accuracy, summary.retention_rate)
     end)
   end)
 
