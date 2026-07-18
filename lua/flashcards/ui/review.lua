@@ -21,6 +21,9 @@ local state = {
   popup = nil,
   showing_answer = false,
   completed = false,
+  waiting_for_repeat = false,
+  repeat_timer = nil,
+  repeat_timer_seq = 0,
   card_shown_at = nil,
   treesitter_seq = 0,
 }
@@ -246,6 +249,45 @@ local function render_complete()
   end
 end
 
+--- Render the waiting screen while future learning repeats remain pending.
+local function render_waiting()
+  if not state.popup or not state.session then
+    return
+  end
+
+  local due_at = state.session:next_pending_due()
+  if not due_at then
+    return
+  end
+
+  state.completed = false
+  state.waiting_for_repeat = true
+  state.showing_answer = false
+  state.card_shown_at = nil
+
+  local remaining_days = math.max(0, due_at - utils.now()) / 86400
+  local lines = {
+    "",
+    "  Waiting for Learning Card",
+    "",
+    "  " .. string.rep("─", 40),
+    "",
+    "  Next card due in: " .. utils.format_interval(remaining_days),
+    "  Due at:           " .. utils.format_datetime(due_at),
+    "",
+    "  This review session will resume automatically.",
+    "",
+    "  Press u to undo the last answer, or q/<Esc> to quit.",
+  }
+
+  local bufnr = state.popup.bufnr
+  stop_markdown_highlighting(bufnr)
+  vim.bo[bufnr].modifiable = true
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
+  vim.bo[bufnr].modifiable = false
+  apply_highlights(bufnr, lines)
+end
+
 --- Render the current card in the review buffer.
 --- Shows question only, or question + answer depending on state.showing_answer.
 local function render_card()
@@ -259,6 +301,7 @@ local function render_card()
     return
   end
   state.completed = false
+  state.waiting_for_repeat = false
 
   local bufnr = state.popup.bufnr
   stop_markdown_highlighting(bufnr)
@@ -399,6 +442,105 @@ local function render_card()
 end
 
 -- ============================================================================
+-- Due-aware repeat timer
+-- ============================================================================
+
+local function close_timer(timer)
+  if not timer then
+    return
+  end
+  pcall(function() timer:stop() end)
+  local closing = false
+  pcall(function() closing = timer:is_closing() end)
+  if not closing then
+    pcall(function() timer:close() end)
+  end
+end
+
+local function cancel_repeat_timer()
+  state.repeat_timer_seq = state.repeat_timer_seq + 1
+  local timer = state.repeat_timer
+  state.repeat_timer = nil
+  close_timer(timer)
+end
+
+local sync_repeat_timer
+local advance_or_wait_or_complete
+
+sync_repeat_timer = function()
+  cancel_repeat_timer()
+  if not state.session or not state.popup then
+    return
+  end
+
+  local due_at = state.session:next_pending_due()
+  if not due_at then
+    return
+  end
+
+  local uv = vim.uv or vim.loop
+  local timer = uv and uv.new_timer and uv.new_timer() or nil
+  if not timer then
+    vim.notify("Unable to schedule the next learning-card repeat", vim.log.levels.ERROR)
+    return
+  end
+
+  local sequence = state.repeat_timer_seq
+  local session = state.session
+  local delay_ms = math.max(0, math.ceil((due_at - utils.now()) * 1000))
+  state.repeat_timer = timer
+
+  local callback = vim.schedule_wrap(function()
+    if state.repeat_timer_seq ~= sequence or state.session ~= session or not state.popup then
+      close_timer(timer)
+      return
+    end
+
+    state.repeat_timer = nil
+    close_timer(timer)
+    local released = session:release_due_repeats(utils.now())
+    if #released > 0 and state.waiting_for_repeat then
+      advance_or_wait_or_complete()
+    else
+      -- If the clock moved backward, this re-arms once for the corrected due
+      -- time. Otherwise it arms the next pending 10m/1h learning step.
+      sync_repeat_timer()
+    end
+  end)
+
+  local ok, err = pcall(function()
+    timer:start(delay_ms, 0, callback)
+  end)
+  if not ok then
+    state.repeat_timer = nil
+    close_timer(timer)
+    vim.notify("Unable to schedule learning-card repeat: " .. tostring(err), vim.log.levels.ERROR)
+  end
+end
+
+advance_or_wait_or_complete = function()
+  if not state.session then
+    return
+  end
+
+  if state.session:next_card() then
+    state.waiting_for_repeat = false
+    state.completed = false
+    state.showing_answer = false
+    state.card_shown_at = nil
+    render_card()
+    sync_repeat_timer()
+  elseif state.session:has_pending_repeats() then
+    render_waiting()
+    sync_repeat_timer()
+  else
+    state.waiting_for_repeat = false
+    cancel_repeat_timer()
+    render_complete()
+  end
+end
+
+-- ============================================================================
 -- Keybindings
 -- ============================================================================
 
@@ -473,6 +615,8 @@ function M.start(store, tag, start_opts)
     return
   end
 
+  cancel_repeat_timer()
+  state.waiting_for_repeat = false
   start_opts = start_opts or {}
   local fsrs_instance = fsrs.new(config.options.fsrs)
   local opts = {
@@ -508,7 +652,7 @@ end
 
 --- Reveal the answer for the current card.
 function M.show_answer()
-  if state.completed then
+  if state.completed or state.waiting_for_repeat then
     return
   end
 
@@ -531,7 +675,7 @@ function M.deferred_step_message(result)
     return nil
   end
   return string.format(
-    "Next %s step is due in %s; start review again after it is due.",
+    "Next %s step is due in %s; this session will resume automatically.",
     fsrs.state_name(status),
     formatted
   )
@@ -541,7 +685,7 @@ end
 --- If the answer is not yet showing, reveals it instead.
 --- @param rating number 0 (Wrong/false) or 1 (Correct/true)
 function M.answer(rating)
-  if not state.session or state.completed then
+  if not state.session or state.completed or state.waiting_for_repeat then
     return
   end
 
@@ -560,17 +704,12 @@ function M.answer(rating)
     vim.notify(deferred_message, vim.log.levels.INFO)
   end
 
-  if state.session:next_card() then
-    state.showing_answer = false
-    render_card()
-  else
-    render_complete()
-  end
+  advance_or_wait_or_complete()
 end
 
 --- Skip the current card, moving it to the end of the queue.
 function M.skip()
-  if not state.session or state.completed then
+  if not state.session or state.completed or state.waiting_for_repeat then
     return
   end
 
@@ -599,14 +738,22 @@ function M.undo()
     return
   end
 
+  local was_waiting = state.waiting_for_repeat
+  cancel_repeat_timer()
   if state.session:undo() then
+    state.waiting_for_repeat = false
     -- The restored card is shown with its answer already visible; do not reuse
     -- the next card's question timer as this card's review duration.
     state.card_shown_at = nil
     state.showing_answer = true
     render_card()
+    sync_repeat_timer()
   else
     vim.notify("Nothing to undo", vim.log.levels.INFO)
+    if was_waiting then
+      render_waiting()
+    end
+    sync_repeat_timer()
   end
 end
 
@@ -640,6 +787,7 @@ end
 --- Shows a summary notification if any cards were reviewed.
 function M.close()
   state.treesitter_seq = state.treesitter_seq + 1
+  cancel_repeat_timer()
 
   local popup = state.popup
   state.popup = nil
@@ -648,6 +796,7 @@ function M.close()
   end
 
   if state.session then
+    state.session:clear_pending_repeats()
     local summary = state.session:summary()
     if summary.reviewed > 0 then
       -- Save the store after the session
@@ -670,6 +819,7 @@ function M.close()
 
   state.showing_answer = false
   state.completed = false
+  state.waiting_for_repeat = false
   state.card_shown_at = nil
 end
 

@@ -4,6 +4,7 @@
 describe("scheduler", function()
   local scheduler
   local utils
+  local mock_now = 1700000000
 
   -- Standalone deep_copy (defined before mock_utils so it can be referenced)
   local function deep_copy(t)
@@ -17,7 +18,7 @@ describe("scheduler", function()
 
   -- Mock utils (same as fsrs_spec pattern)
   local mock_utils = {
-    now = function() return 1700000000 end,
+    now = function() return mock_now end,
     days_between = function(from, to) return math.abs(to - from) / 86400 end,
     add_days = function(ts, days) return ts + math.floor(days * 86400) end,
     format_interval = function(days)
@@ -229,6 +230,7 @@ describe("scheduler", function()
   -- ========================================================================
 
   before_each(function()
+    mock_now = 1700000000
     package.loaded["flashcards.utils"] = mock_utils
     package.loaded["flashcards.scheduler"] = nil
     scheduler = require("flashcards.scheduler")
@@ -600,6 +602,181 @@ describe("scheduler", function()
       assert.equals(2, count, "already-due learning card should get one extra queue copy")
       assert.is_false(result.deferred)
       assert.is_true(result.requeued)
+    end)
+  end)
+
+  describe("due-aware repeats", function()
+    local function make_learning_fsrs(delays)
+      local call = 0
+      return {
+        schedule = function(_, card_state, _, now)
+          call = call + 1
+          local delay = delays[call]
+          local new_state = deep_copy(card_state)
+          if delay then
+            new_state.status = "learning"
+            new_state.learning_step = call
+            new_state.due_date = now + delay
+            new_state.last_review = now
+            new_state.reps = (card_state.reps or 0) + 1
+            return new_state, { days = delay / 86400, formatted = tostring(delay) .. "s" }
+          end
+          new_state.status = "review"
+          new_state.learning_step = 0
+          new_state.due_date = now + 86400
+          new_state.last_review = now
+          new_state.reps = (card_state.reps or 0) + 1
+          return new_state, { days = 1, formatted = "1d" }
+        end,
+      }
+    end
+
+    it("releases a failed card only when due and places it a few cards ahead", function()
+      local cards, states = {}, {}
+      for i = 1, 6 do
+        local id = "new" .. i
+        cards[#cards + 1] = { id = id, front = "Q" .. i, back = "A" .. i, tags = {} }
+        states[id] = { status = "new" }
+      end
+      local session = scheduler.new_session(make_mock_store(cards, states), make_learning_fsrs({ 60 }))
+      session:load_cards()
+      session:next_card()
+
+      local result = session:answer(0)
+      assert.is_true(result.deferred)
+      assert.is_false(result.requeued)
+      assert.equals(1, session:pending_repeat_count())
+      assert.equals(mock_now + 60, session:next_pending_due())
+      assert.same({}, session:release_due_repeats(mock_now + 59))
+      assert.equals(6, #session.queue)
+
+      mock_now = mock_now + 60
+      local released = session:release_due_repeats()
+      assert.equals(1, #released)
+      assert.equals("new1", released[1].card_id)
+      assert.equals(0, session:pending_repeat_count())
+      assert.equals(7, #session.queue)
+      assert.equals("new1", session.queue[4].id)
+      assert.same({}, session:release_due_repeats())
+      assert.equals(7, #session.queue)
+    end)
+
+    it("resumes an exhausted queue when a pending card becomes due", function()
+      local cards = { { id = "card1", front = "Q", back = "A", tags = {} } }
+      local states = { card1 = { status = "new" } }
+      local session = scheduler.new_session(make_mock_store(cards, states), make_learning_fsrs({ 60 }))
+      session:load_cards()
+      assert.is_true(session:next_card())
+      session:answer(0)
+      assert.is_false(session:next_card())
+      assert.is_nil(session:current_card())
+
+      mock_now = mock_now + 60
+      assert.is_true(session:next_card())
+      assert.equals("card1", session:current_card().id)
+      assert.equals(0, session:pending_repeat_count())
+    end)
+
+    it("tracks the earliest of multiple pending cards independently", function()
+      local cards = {
+        { id = "card1", front = "Q1", back = "A1", tags = {} },
+        { id = "card2", front = "Q2", back = "A2", tags = {} },
+      }
+      local states = { card1 = { status = "new" }, card2 = { status = "new" } }
+      local session = scheduler.new_session(make_mock_store(cards, states), make_learning_fsrs({ 60, 120 }))
+      session:load_cards()
+      session:next_card()
+      session:answer(0)
+      session:next_card()
+      session:answer(0)
+      assert.equals(2, session:pending_repeat_count())
+      assert.equals(mock_now + 60, session:next_pending_due())
+      assert.is_false(session:next_card())
+
+      mock_now = mock_now + 60
+      local released = session:release_due_repeats()
+      assert.equals(1, #released)
+      assert.equals("card1", released[1].card_id)
+      assert.equals(1, session:pending_repeat_count())
+      assert.equals(mock_now + 60, session:next_pending_due())
+    end)
+
+    it("supports successive same-session learning steps until graduation", function()
+      local cards = { { id = "card1", front = "Q", back = "A", tags = {} } }
+      local states = { card1 = { status = "new" } }
+      local session = scheduler.new_session(make_mock_store(cards, states), make_learning_fsrs({ 60, 600 }))
+      session:load_cards()
+      session:next_card()
+      session:answer(0)
+      assert.is_false(session:next_card())
+
+      mock_now = mock_now + 60
+      assert.is_true(session:next_card())
+      local second = session:answer(1)
+      assert.is_true(second.deferred)
+      assert.equals(mock_now + 600, session:next_pending_due())
+      assert.is_false(session:next_card())
+
+      mock_now = mock_now + 600
+      assert.is_true(session:next_card())
+      local graduated = session:answer(1)
+      assert.equals("review", graduated.state.status)
+      assert.is_false(graduated.deferred)
+      assert.is_false(session:has_pending_repeats())
+    end)
+
+    it("runs the production 1m, 10m, and 1h FSRS learning sequence in one session", function()
+      local cards = { { id = "card1", front = "Q", back = "A", tags = {} } }
+      local states = { card1 = { status = "new", learning_step = 0, reps = 0, lapses = 0 } }
+      local fsrs_module = require("flashcards.fsrs")
+      local real_fsrs = fsrs_module.new({ enable_fuzz = false })
+      local session = scheduler.new_session(make_mock_store(cards, states), real_fsrs)
+      session:load_cards()
+      session:next_card()
+
+      local first = session:answer(fsrs_module.Rating.Wrong)
+      assert.equals("1m", first.intervals.formatted)
+      assert.is_false(session:next_card())
+
+      mock_now = mock_now + 60
+      assert.is_true(session:next_card())
+      local second = session:answer(fsrs_module.Rating.Correct)
+      assert.equals("10m", second.intervals.formatted)
+      assert.is_false(session:next_card())
+
+      mock_now = mock_now + 600
+      assert.is_true(session:next_card())
+      local third = session:answer(fsrs_module.Rating.Correct)
+      assert.equals("1h", third.intervals.formatted)
+      assert.is_false(session:next_card())
+
+      mock_now = mock_now + 3600
+      assert.is_true(session:next_card())
+      local graduated = session:answer(fsrs_module.Rating.Correct)
+      assert.equals("review", graduated.state.status)
+      assert.is_false(session:has_pending_repeats())
+    end)
+
+    it("undo removes a pending or already-released repeat", function()
+      local cards = { { id = "card1", front = "Q", back = "A", tags = {} } }
+      local states = { card1 = { status = "new" } }
+      local session = scheduler.new_session(make_mock_store(cards, states), make_learning_fsrs({ 60, 60 }))
+      session:load_cards()
+      session:next_card()
+      session:answer(0)
+      assert.equals(1, session:pending_repeat_count())
+      assert.is_true(session:undo())
+      assert.equals(0, session:pending_repeat_count())
+      assert.equals(1, #session.queue)
+
+      session:answer(0)
+      assert.is_false(session:next_card())
+      mock_now = mock_now + 60
+      assert.is_true(session:next_card())
+      assert.equals(2, #session.queue)
+      assert.is_true(session:undo())
+      assert.equals(1, #session.queue)
+      assert.equals("card1", session:current_card().id)
     end)
   end)
 

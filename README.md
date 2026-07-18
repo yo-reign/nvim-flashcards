@@ -376,9 +376,12 @@ roots), it becomes "orphaned":
 ### Learning Phase
 
 New cards go through learning steps (1min, 10min, 1hour by default) before
-graduating to the regular review schedule. Future-due learning steps are not
-shown early in the same session. The review UI reports when the next step is
-due; rerun review after that time to continue the same-day learning steps.
+graduating to the regular review schedule. Future-due learning steps are never
+shown early. While the review popup remains open, they stay pending and are
+inserted a few cards ahead as soon as they become due. If the active queue ends
+first, the popup waits and resumes automatically with a one-shot timer. Closing
+the popup is always safe; persisted due dates make those cards available in a
+later session.
 
 ### Spaced Repetition
 

@@ -23,6 +23,8 @@ local utils = require("flashcards.utils")
 --- @field new_cards_limit number|false|nil max new cards per day; false/nil is unlimited
 --- @field priority_card_id string|nil card to move to the front when it is available
 --- @field deferred_new_count number new cards excluded by today's configured cap
+--- @field pending_repeats table<string, table> future learning/relearning repeats keyed by card ID
+--- @field next_pending_token number monotonically increasing pending-repeat generation
 local Session = {}
 Session.__index = Session
 
@@ -84,6 +86,8 @@ function M.new_session(store, fsrs, opts)
   self.new_cards_limit = opts.new_cards_per_day
   self.priority_card_id = opts.priority_card_id
   self.deferred_new_count = 0
+  self.pending_repeats = {}
+  self.next_pending_token = 0
   self.initial_count = 0
   return self
 end
@@ -96,6 +100,7 @@ end
 --- Queue order: learning/relearning cards first (sorted by due_date),
 --- then interleaved new + review cards. New cards limited to new_cards_per_day.
 function Session:load_cards()
+  self.pending_repeats = {}
   local due, availability = self.store:get_due_cards(self.tag, self.new_cards_limit)
   availability = availability or {}
   self.deferred_new_count = availability.deferred_new or 0
@@ -162,19 +167,130 @@ function Session:load_cards()
 end
 
 -- ============================================================================
+-- Due-aware learning repeats
+-- ============================================================================
+
+local REPEAT_SPACING_CARDS = 2
+
+local function has_unprocessed_card(session, card_id)
+  for index = session.current_idx + 1, #session.queue do
+    if session.queue[index].id == card_id then
+      return true
+    end
+  end
+  return false
+end
+
+--- Release pending learning/relearning cards whose real due time has arrived.
+--- Released cards are placed a couple of positions ahead when possible and
+--- never duplicate an existing unprocessed occurrence.
+--- @param now number|nil unix timestamp, defaults to utils.now()
+--- @return table[] released pending entries
+function Session:release_due_repeats(now)
+  now = now or utils.now()
+  local due = {}
+  for card_id, entry in pairs(self.pending_repeats) do
+    if entry.due_at <= now then
+      due[#due + 1] = {
+        card_id = card_id,
+        card = entry.card,
+        due_at = entry.due_at,
+        token = entry.token,
+      }
+    end
+  end
+  table.sort(due, function(a, b)
+    if a.due_at ~= b.due_at then
+      return a.due_at < b.due_at
+    end
+    return a.card_id < b.card_id
+  end)
+
+  if #due == 0 then
+    return {}
+  end
+
+  local old_queue_len = #self.queue
+  if self.current_idx > old_queue_len then
+    -- next_card() moved past the exhausted queue while waiting. Restore the
+    -- insertion anchor so its next call selects the first released repeat.
+    self.current_idx = old_queue_len
+  end
+
+  local base_insert_pos = math.min(
+    self.current_idx + REPEAT_SPACING_CARDS + 1,
+    #self.queue + 1
+  )
+  local last_insert_pos = base_insert_pos - 1
+  local released = {}
+
+  for _, entry in ipairs(due) do
+    local current = self.pending_repeats[entry.card_id]
+    if current and current.token == entry.token then
+      if not has_unprocessed_card(self, entry.card_id) then
+        local insert_pos = math.min(
+          #self.queue + 1,
+          math.max(base_insert_pos, last_insert_pos + 1)
+        )
+        table.insert(self.queue, insert_pos, entry.card)
+        last_insert_pos = insert_pos
+      end
+      self.pending_repeats[entry.card_id] = nil
+      released[#released + 1] = entry
+    end
+  end
+
+  return released
+end
+
+--- Return the earliest future pending-repeat timestamp.
+--- @return number|nil
+function Session:next_pending_due()
+  local earliest = nil
+  for _, entry in pairs(self.pending_repeats) do
+    if earliest == nil or entry.due_at < earliest then
+      earliest = entry.due_at
+    end
+  end
+  return earliest
+end
+
+--- Return whether the session is waiting on any learning/relearning repeats.
+--- @return boolean
+function Session:has_pending_repeats()
+  return next(self.pending_repeats) ~= nil
+end
+
+--- Return the number of pending learning/relearning repeats.
+--- @return number
+function Session:pending_repeat_count()
+  local count = 0
+  for _ in pairs(self.pending_repeats) do
+    count = count + 1
+  end
+  return count
+end
+
+--- Clear non-persisted session repeat tracking. Persisted due dates remain.
+function Session:clear_pending_repeats()
+  self.pending_repeats = {}
+end
+
+-- ============================================================================
 -- Navigation
 -- ============================================================================
 
---- Advance to the next card in the queue.
---- @return boolean true if there is a card to review, false if session is done
+--- Advance to the next card in the queue, releasing repeats that are now due.
+--- @return boolean true if there is a card to review, false if none is currently due
 function Session:next_card()
+  self:release_due_repeats(utils.now())
   if self.current_idx < #self.queue then
     self.current_idx = self.current_idx + 1
     return true
   end
 
   -- Move past the queue end so current_card()/answer()/skip() cannot keep
-  -- operating on the final card after the session is complete.
+  -- operating on the final card while the session completes or waits.
   self.current_idx = #self.queue + 1
   return false
 end
@@ -213,14 +329,9 @@ end
 -- Answering
 -- ============================================================================
 
---- Maximum interval (in days) for re-queuing already-due learning cards.
---- Future-due learning steps are not reinserted into the active queue because
---- that makes 10m/1h steps appear immediately after only a few other cards.
-local REQUEUE_THRESHOLD_DAYS = 30 / (24 * 60) -- 30 minutes in days
-
 --- Answer the current card with a rating.
 --- Schedules via FSRS, records review in session and store, updates card state,
---- and re-queues only if the card is still in learning/relearning and already due.
+--- and tracks learning/relearning repeats until their real due time arrives.
 --- @param rating number 0 (Wrong/false) or 1 (Correct/true)
 --- @param elapsed_ms number|nil time spent on this card in milliseconds
 function Session:answer(rating, elapsed_ms)
@@ -284,30 +395,38 @@ function Session:answer(rating, elapsed_ms)
   end
 
   review_record.review_id = review_id
-  table.insert(self.reviews, review_record)
 
-  -- Re-queue only if the card is already due. Most learning steps have a
-  -- future due_date (e.g. 10m/1h); showing them before that time defeats the
-  -- spacing interval and caused immediate same-session repeats.
   local final_status = new_state.status
   local due_at = new_state.due_date or utils.add_days(now, intervals.days)
-  local requeued = false
-  if (final_status == "learning" or final_status == "relearning")
-    and intervals.days <= REQUEUE_THRESHOLD_DAYS
-    and due_at <= now then
-    -- Space re-queued cards out like Anki: at least a few cards before seeing again
-    local remaining = #self.queue - self.current_idx
-    local spacing = math.max(2, math.min(8, math.floor(remaining * 0.5)))
-    local insert_pos = math.min(self.current_idx + spacing + 1, #self.queue + 1)
-    table.insert(self.queue, insert_pos, card)
-    requeued = true
+  self.pending_repeats[card.id] = nil
+  if final_status == "learning" or final_status == "relearning" then
+    self.next_pending_token = self.next_pending_token + 1
+    local token = self.next_pending_token
+    self.pending_repeats[card.id] = {
+      card = card,
+      due_at = due_at,
+      token = token,
+    }
+    review_record.pending_token = token
   end
+
+  table.insert(self.reviews, review_record)
+  local released = self:release_due_repeats(now)
+  local requeued = false
+  for _, entry in ipairs(released) do
+    if entry.card_id == card.id and entry.token == review_record.pending_token then
+      requeued = true
+      break
+    end
+  end
+  local pending = self.pending_repeats[card.id]
+  local deferred = pending ~= nil and pending.token == review_record.pending_token
 
   return {
     state = new_state,
     intervals = intervals,
     due_at = due_at,
-    deferred = (final_status == "learning" or final_status == "relearning") and due_at > now,
+    deferred = deferred,
     requeued = requeued,
   }
 end
@@ -345,6 +464,11 @@ function Session:undo()
   end
 
   table.remove(self.reviews)
+
+  local pending = self.pending_repeats[last_review.card.id]
+  if pending and pending.token == last_review.pending_token then
+    self.pending_repeats[last_review.card.id] = nil
+  end
 
   -- Restore queue position: put the card back at the position it was answered from
   -- First, remove any re-queued copies of this card that were added by the answer
