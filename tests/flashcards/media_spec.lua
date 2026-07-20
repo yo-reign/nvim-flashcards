@@ -62,6 +62,39 @@ describe("media", function()
     assert.equals(3, plan.audio[1].line)
   end)
 
+  it("extracts an image appended to prose on the same line", function()
+    local source = write("philosophy/greek/cards.md", "# cards")
+    local image = write("assets/dice.png")
+    local content = "Plato’s Academy emphasized exact sciences and geometry. ![Dice](../../assets/dice.png)"
+    local plan = media.extract(content, source, { root }, options())
+
+    assert.equals(2, #plan.lines)
+    assert.equals("Plato’s Academy emphasized exact sciences and geometry.", plan.lines[1])
+    assert.equals("[Image: Dice]", plan.lines[2])
+    assert.equals(image, plan.images[1].path)
+    assert.equals(2, plan.images[1].line)
+  end)
+
+  it("extracts multiple inline media references while preserving ordinary links and code", function()
+    local source = write("cards.md", "# cards")
+    local image = write("assets/cell.png")
+    local audio = write("assets/cell.mp3")
+    local plan = media.extract(
+      "See [notes](notes.md), `![example](assets/cell.png)`, ``![double](assets/cell.png)``, ![Cell](assets/cell.png), and [listen](assets/cell.mp3).",
+      source,
+      { root },
+      options()
+    )
+
+    assert.truthy(plan.lines[1]:find("[notes](notes.md)", 1, true))
+    assert.truthy(plan.lines[1]:find("`![example](assets/cell.png)`", 1, true))
+    assert.truthy(plan.lines[1]:find("``![double](assets/cell.png)``", 1, true))
+    assert.equals("[Image: Cell]", plan.lines[2])
+    assert.equals("[Audio: listen] (press p to play)", plan.lines[3])
+    assert.equals(image, plan.images[1].path)
+    assert.equals(audio, plan.audio[1].path)
+  end)
+
   it("supports angle-bracket destinations containing spaces and Markdown titles", function()
     local source = write("cards.md", "# cards")
     local image = write("assets/cell diagram.png")

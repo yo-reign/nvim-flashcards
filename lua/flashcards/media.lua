@@ -137,9 +137,112 @@ local function fence_ticks(line)
   return nil
 end
 
---- Extract supported full-line Markdown media references and build placeholders.
---- Media inside fenced code blocks is left untouched. A destination containing
---- spaces must use Markdown's `<path with spaces>` form.
+local function closing_parenthesis(line, open_index)
+  local depth = 1
+  local quote = nil
+  local escaped = false
+  for index = open_index + 1, #line do
+    local character = line:sub(index, index)
+    if escaped then
+      escaped = false
+    elseif character == "\\" then
+      escaped = true
+    elseif quote then
+      if character == quote then quote = nil end
+    elseif character == '"' or character == "'" then
+      quote = character
+    elseif character == "(" then
+      depth = depth + 1
+    elseif character == ")" then
+      depth = depth - 1
+      if depth == 0 then return index end
+    end
+  end
+  return nil
+end
+
+local function inside_inline_code(line, position)
+  local open_ticks = nil
+  local index = 1
+  while index < position do
+    if line:sub(index, index) == "`" then
+      local run_end = index
+      while line:sub(run_end + 1, run_end + 1) == "`" do
+        run_end = run_end + 1
+      end
+      local run_length = run_end - index + 1
+      if not open_ticks then
+        open_ticks = run_length
+      elseif run_length == open_ticks then
+        open_ticks = nil
+      end
+      index = run_end + 1
+    else
+      index = index + 1
+    end
+  end
+  return open_ticks ~= nil
+end
+
+local function extract_line_references(line, image_options, audio_options, image_extensions, audio_extensions)
+  local references = {}
+  local pieces = {}
+  local search_index = 1
+  local output_index = 1
+
+  while search_index <= #line do
+    local label_open = line:find("[", search_index, true)
+    if not label_open then break end
+    local is_image = label_open > 1 and line:sub(label_open - 1, label_open - 1) == "!"
+    local token_start = is_image and (label_open - 1) or label_open
+    local label_close = line:find("]", label_open + 1, true)
+    local target_open = label_close and label_close + 1 or nil
+    if not label_close or line:sub(target_open, target_open) ~= "(" then
+      search_index = label_open + 1
+    else
+      local target_close = closing_parenthesis(line, target_open)
+      if not target_close then
+        break
+      end
+
+      local label = line:sub(label_open + 1, label_close - 1)
+      local raw_target = line:sub(target_open + 1, target_close - 1)
+      local target = parse_target(raw_target)
+      local extension = target and target_extension(target) or nil
+      local kind = nil
+      if not inside_inline_code(line, token_start) then
+        if is_image and image_options.enabled ~= false and extension and image_extensions[extension] then
+          kind = "image"
+        elseif not is_image and audio_options.enabled ~= false and extension and audio_extensions[extension] then
+          kind = "audio"
+        end
+      end
+
+      if kind then
+        pieces[#pieces + 1] = line:sub(output_index, token_start - 1)
+        pieces[#pieces + 1] = " "
+        references[#references + 1] = {
+          kind = kind,
+          label = trim(label),
+          raw_target = raw_target,
+        }
+        output_index = target_close + 1
+      end
+      search_index = target_close + 1
+    end
+  end
+
+  if #references == 0 then
+    return line, references
+  end
+  pieces[#pieces + 1] = line:sub(output_index)
+  return table.concat(pieces):gsub("%s+$", ""), references
+end
+
+--- Extract supported Markdown media references and build separate placeholders.
+--- References may occupy a full line or appear alongside prose. Media inside
+--- fenced or inline code is left untouched. A destination containing spaces
+--- must use Markdown's `<path with spaces>` form.
 --- @param content string visible card-side Markdown
 --- @param card_file_path string card source path
 --- @param directories string[] configured flashcard directories
@@ -171,46 +274,43 @@ function M.extract(content, card_file_path, directories, options)
     elseif active_fence > 0 then
       plan.lines[#plan.lines + 1] = line
     else
-      local kind, label, raw_target
-      local image_label, image_target = line:match("^%s*!%[([^%]]*)%]%((.*)%)%s*$")
-      if image_target then
-        local parsed_target = parse_target(image_target)
-        local extension = parsed_target and target_extension(parsed_target) or nil
-        if image_options.enabled ~= false and extension and image_extensions[extension] then
-          kind, label, raw_target = "image", trim(image_label), image_target
-        end
+      local text, references = extract_line_references(
+        line,
+        image_options,
+        audio_options,
+        image_extensions,
+        audio_extensions
+      )
+      if trim(text) ~= "" then
+        plan.lines[#plan.lines + 1] = text
       end
 
-      if not kind then
-        local audio_label, audio_target = line:match("^%s*%[([^%]]*)%]%((.*)%)%s*$")
-        if audio_target then
-          local parsed_target = parse_target(audio_target)
-          local extension = parsed_target and target_extension(parsed_target) or nil
-          if audio_options.enabled ~= false and extension and audio_extensions[extension] then
-            kind, label, raw_target = "audio", trim(audio_label), audio_target
-          end
-        end
-      end
-
-      if not kind then
-        plan.lines[#plan.lines + 1] = line
-      else
-        local target, parse_error = parse_target(raw_target)
+      for _, reference in ipairs(references) do
+        local target, parse_error = parse_target(reference.raw_target)
         local path, resolve_error
         if target then
           path, resolve_error = M.resolve(target, card_file_path, directories, options.roots)
         end
         local item = {
-          kind = kind,
-          label = label,
+          kind = reference.kind,
+          label = reference.label,
           target = target,
           path = path,
           error = parse_error or resolve_error,
           line = #plan.lines + 1,
         }
-        plan.lines[#plan.lines + 1] = placeholder(kind, label ~= "" and label or (target or "media"), path ~= nil)
+        plan.lines[#plan.lines + 1] = placeholder(
+          reference.kind,
+          reference.label ~= "" and reference.label or (target or "media"),
+          path ~= nil
+        )
         plan.items[#plan.items + 1] = item
-        plan[kind == "image" and "images" or "audio"][#plan[kind == "image" and "images" or "audio"] + 1] = item
+        local bucket = reference.kind == "image" and plan.images or plan.audio
+        bucket[#bucket + 1] = item
+      end
+
+      if trim(text) == "" and #references == 0 then
+        plan.lines[#plan.lines + 1] = line
       end
     end
   end

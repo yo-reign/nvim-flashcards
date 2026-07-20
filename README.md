@@ -196,8 +196,10 @@ Legacy `<!-- note: ... -->` comments are still parsed for existing cards. Existi
 
 ### Images and Audio
 
-Media remains ordinary Markdown and is stored as part of the card text. Put each
-media reference on its own line inside a fenced card:
+Media remains ordinary Markdown and is stored as part of the card text. Media
+references may be placed on their own line or appended to prose; the review UI
+moves each recognized item to its own placeholder/render row so an image cannot
+cover the surrounding text. Fenced cards are recommended for media-heavy cards:
 
 ```markdown
 :::card
