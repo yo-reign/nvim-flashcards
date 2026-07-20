@@ -71,8 +71,9 @@ local function allowed_roots(directories, extra_roots)
   return roots
 end
 
---- Resolve a local media target relative to the card's Markdown source file.
---- Both the source file and resolved media must remain inside configured roots.
+--- Resolve a local media target relative to the card's Markdown source file,
+--- or expand an explicit `~/` target. Both the source file and resolved media
+--- must remain inside configured roots.
 --- @param target string Markdown link destination
 --- @param card_file_path string canonical or legacy card source path
 --- @param directories string[] configured flashcard directories
@@ -87,8 +88,9 @@ function M.resolve(target, card_file_path, directories, extra_roots)
     return nil, "remote and special media URLs are not supported"
   end
 
+  local is_home_path = target:sub(1, 2) == "~/"
   if utils.is_absolute_path(target) then
-    return nil, "media paths must be relative to the card source file"
+    return nil, "absolute media paths are not supported; use a relative or ~/ path"
   end
 
   local source_path = utils.resolve_card_path(card_file_path, directories)
@@ -97,7 +99,8 @@ function M.resolve(target, card_file_path, directories, extra_roots)
   end
 
   local source_dir = vim.fn.fnamemodify(source_path, ":h")
-  local canonical = utils.canonical_path(source_dir .. "/" .. target)
+  local candidate = is_home_path and utils.normalize_path(target) or (source_dir .. "/" .. target)
+  local canonical = utils.canonical_path(candidate)
   local inside_allowed_root = false
   for _, root in ipairs(allowed_roots(directories, extra_roots)) do
     if utils.is_subpath(canonical, root) then

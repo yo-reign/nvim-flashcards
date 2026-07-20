@@ -85,6 +85,38 @@ describe("media", function()
     assert.equals(audio, audio_plan.audio[1].path)
   end)
 
+  it("expands ~/ media paths while retaining root confinement", function()
+    local source = write("cards.md", "# cards")
+    local image = write("assets/dice.png")
+    local outside = os.tmpname() .. ".png"
+    assert(utils.write_file(outside, "outside"))
+    local original_expand = vim.fn.expand
+    vim.fn.expand = function(path)
+      if path == "~/notes/assets/dice.png" then return image end
+      if path == "~/outside/dice.png" then return outside end
+      return original_expand(path)
+    end
+    local plan = media.extract(
+      "![Dice](~/notes/assets/dice.png)",
+      source,
+      { root },
+      options()
+    )
+    local escaped = media.extract(
+      "![Dice](~/outside/dice.png)",
+      source,
+      { root },
+      options()
+    )
+    vim.fn.expand = original_expand
+    os.remove(outside)
+
+    assert.equals(image, plan.images[1].path)
+    assert.equals("[Image: Dice]", plan.lines[1])
+    assert.is_nil(escaped.images[1].path)
+    assert.truthy(escaped.images[1].error:find("outside", 1, true))
+  end)
+
   it("rejects absolute media paths even when they are inside an allowed root", function()
     local source = write("cards.md", "# cards")
     local image = write("assets/cell.png")

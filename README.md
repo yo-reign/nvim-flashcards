@@ -196,8 +196,9 @@ A chloroplast.
 - Audio uses a standard Markdown link whose target ends in a configured audio
   extension: `[label](relative/path.mp3)`.
 - Paths are resolved relative to the Markdown source file, not Neovim's current
-  directory. Paths containing spaces must use `<...>`, such as
-  `![Cell](<assets/cell diagram.png>)`.
+  directory. Explicit home paths such as `~/notes/assets/dice.png` are also
+  supported when they remain inside an allowed root. Paths containing spaces
+  must use `<...>`, such as `![Cell](<assets/cell diagram.png>)`.
 - Media is local-only and must remain inside a configured flashcard directory or
   an explicitly configured `media.roots` directory. Remote URLs are rejected.
 - Question-side media is available immediately. Answer-side files are not
