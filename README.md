@@ -201,8 +201,13 @@ references may be placed on their own line or appended to prose; the review UI
 moves each recognized item to its own render row so an image cannot cover the
 surrounding text. A readable label remains above each image as a caption and as
 the fallback when inline rendering is unavailable. Images use a bounded,
-centered terminal-cell box by default. Fenced cards are recommended for
-media-heavy cards:
+centered terminal-cell box with contain-style aspect-ratio preservation by
+default. When ImageMagick is available, source dimensions are verified before
+rendering so extended WebP metadata cannot collapse an image to one row. During
+review, press `i` over an image caption/render row to cycle that image through
+`contain`, `cover`, and `stretch`; when the cursor is elsewhere, the first
+visible image is selected. The choice lasts for the current card. Fenced cards
+are recommended for media-heavy cards:
 
 ```markdown
 :::card
@@ -227,6 +232,11 @@ A chloroplast.
   an explicitly configured `media.roots` directory. Remote URLs are rejected.
 - Question-side media is available immediately. Answer-side files are not
   resolved, rendered, or played until the answer is revealed.
+- `contain` preserves the complete image and aspect ratio, `cover` preserves
+  aspect ratio while center-cropping to fill the box, and `stretch` fills the
+  box with possible distortion. `cover` and `stretch` require ImageMagick and
+  safely fall back to `contain` if conversion fails. `media.images.fit` selects
+  the default and `media.images.fit_modes` controls cycle order.
 - Audio never autoplays. Press `p` to play/replay the preferred visible audio
   and `o` to open visible media with the platform handler.
 
@@ -346,6 +356,7 @@ The first card gets `#python` and `#python/decorators` (nested scopes build hier
 | `e` | Edit card source file |
 | `p` | Play/replay visible card audio |
 | `o` | Open visible media externally |
+| `i` | Cycle cursor image fit (`contain`/`cover`/`stretch`) |
 | `q` or `Esc` | Quit session |
 
 ## Configuration
@@ -393,10 +404,12 @@ require("flashcards").setup({
         images = {
             enabled = true,
             extensions = { "png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "svg" },
-            -- Maximum terminal-cell bounding box; aspect ratio is preserved.
+            -- Terminal-cell bounding box and default scaling behavior.
             max_width = 40,
             max_height = 12,
             alignment = "center", -- "left", "center", or "right"
+            fit = "contain", -- "contain", "cover", or "stretch"
+            fit_modes = { "contain", "cover", "stretch" },
         },
         audio = {
             enabled = true,
@@ -424,6 +437,7 @@ require("flashcards").setup({
             edit = "e",
             play_audio = "p",
             open_media = "o",
+            cycle_image_fit = "i",
         },
     },
 

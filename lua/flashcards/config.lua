@@ -41,6 +41,8 @@ M.defaults = {
       max_width = 40,
       max_height = 12,
       alignment = "center",
+      fit = "contain",
+      fit_modes = { "contain", "cover", "stretch" },
     },
     audio = {
       enabled = true,
@@ -66,6 +68,7 @@ M.defaults = {
       edit = "e",
       play_audio = "p",
       open_media = "o",
+      cycle_image_fit = "i",
     },
     icons = {
       correct = "v",
@@ -113,8 +116,13 @@ function M.setup(opts)
     if type(opts.media.roots) == "table" then
       M.options.media.roots = vim.deepcopy(opts.media.roots)
     end
-    if type(opts.media.images) == "table" and type(opts.media.images.extensions) == "table" then
-      M.options.media.images.extensions = vim.deepcopy(opts.media.images.extensions)
+    if type(opts.media.images) == "table" then
+      if type(opts.media.images.extensions) == "table" then
+        M.options.media.images.extensions = vim.deepcopy(opts.media.images.extensions)
+      end
+      if type(opts.media.images.fit_modes) == "table" then
+        M.options.media.images.fit_modes = vim.deepcopy(opts.media.images.fit_modes)
+      end
     end
     if type(opts.media.audio) == "table" then
       if type(opts.media.audio.extensions) == "table" then
@@ -292,6 +300,26 @@ function M.validate()
   if not vim.tbl_contains({ "left", "center", "right" }, media.images.alignment) then
     return false, "media.images.alignment must be \"left\", \"center\", or \"right\""
   end
+  local fit_modes_ok, fit_modes_err = validate_string_list(
+    media.images.fit_modes,
+    "media.images.fit_modes",
+    false
+  )
+  if not fit_modes_ok then return false, fit_modes_err end
+  local valid_fit_modes = { contain = true, cover = true, stretch = true }
+  local seen_fit_modes = {}
+  for index, mode in ipairs(media.images.fit_modes) do
+    if not valid_fit_modes[mode] then
+      return false, string.format("media.images.fit_modes[%d] has unsupported mode: %s", index, mode)
+    end
+    if seen_fit_modes[mode] then
+      return false, "media.images.fit_modes must not contain duplicates: " .. mode
+    end
+    seen_fit_modes[mode] = true
+  end
+  if type(media.images.fit) ~= "string" or not seen_fit_modes[media.images.fit] then
+    return false, "media.images.fit must be one of media.images.fit_modes"
+  end
   local player = media.audio.player
   if player ~= false then
     local player_ok, player_err = validate_string_list(player, "media.audio.player", false)
@@ -301,7 +329,7 @@ function M.validate()
   if type(opts.ui) ~= "table" or type(opts.ui.keymaps) ~= "table" then
     return false, "ui.keymaps must be a table"
   end
-  for _, name in ipairs({ "play_audio", "open_media" }) do
+  for _, name in ipairs({ "play_audio", "open_media", "cycle_image_fit" }) do
     local key = opts.ui.keymaps[name]
     if type(key) ~= "string" or key == "" then
       return false, "ui.keymaps." .. name .. " must be a non-empty string"

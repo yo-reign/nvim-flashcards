@@ -22,10 +22,13 @@ describe("config", function()
       assert.equals(40, config.options.media.images.max_width)
       assert.equals(12, config.options.media.images.max_height)
       assert.equals("center", config.options.media.images.alignment)
+      assert.equals("contain", config.options.media.images.fit)
+      assert.same({ "contain", "cover", "stretch" }, config.options.media.images.fit_modes)
       assert.is_true(config.options.media.audio.enabled)
       assert.is_false(config.options.media.audio.player)
       assert.equals("p", config.options.ui.keymaps.play_audio)
       assert.equals("o", config.options.ui.keymaps.open_media)
+      assert.equals("i", config.options.ui.keymaps.cycle_image_fit)
       assert.equals(0.7, config.options.ui.width)
       assert.equals(0.6, config.options.ui.height)
       assert.equals("rounded", config.options.ui.border)
@@ -60,7 +63,11 @@ describe("config", function()
       config.setup({
         media = {
           roots = { "/tmp/media/" },
-          images = { extensions = { "png" } },
+          images = {
+            extensions = { "png" },
+            fit = "cover",
+            fit_modes = { "cover", "contain" },
+          },
           audio = {
             extensions = { "wav" },
             player = { "custom-player", "--audio-only" },
@@ -70,6 +77,8 @@ describe("config", function()
 
       assert.same({ "/tmp/media" }, config.options.media.roots)
       assert.same({ "png" }, config.options.media.images.extensions)
+      assert.equals("cover", config.options.media.images.fit)
+      assert.same({ "cover", "contain" }, config.options.media.images.fit_modes)
       assert.same({ "wav" }, config.options.media.audio.extensions)
       assert.same({ "custom-player", "--audio-only" }, config.options.media.audio.player)
     end)
@@ -198,11 +207,16 @@ describe("config", function()
         { media = { images = { extensions = {} } }, expected = "media.images.extensions" },
         { media = { images = { max_width = 0 } }, expected = "media.images.max_width" },
         { media = { images = { alignment = "middle" } }, expected = "media.images.alignment" },
+        { media = { images = { fit = "original" } }, expected = "media.images.fit" },
+        { media = { images = { fit_modes = {} } }, expected = "media.images.fit_modes" },
+        { media = { images = { fit_modes = { "contain", "original" } } }, expected = "unsupported mode" },
+        { media = { images = { fit_modes = { "contain", "contain" } } }, expected = "duplicates" },
         { media = { audio = { extensions = { "mp-3" } } }, expected = "media.audio.extensions" },
         { media = { audio = { player = "mpv" } }, expected = "media.audio.player" },
         { media = { audio = { player = {} } }, expected = "media.audio.player" },
         { ui = { keymaps = { play_audio = false } }, expected = "ui.keymaps.play_audio" },
         { ui = { keymaps = { open_media = "" } }, expected = "ui.keymaps.open_media" },
+        { ui = { keymaps = { cycle_image_fit = false } }, expected = "ui.keymaps.cycle_image_fit" },
       }
       for _, case in ipairs(invalid_cases) do
         config.setup(vim.tbl_deep_extend("force", { directories = { "/tmp/test-notes" } }, case))

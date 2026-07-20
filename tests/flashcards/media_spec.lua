@@ -20,6 +20,8 @@ describe("media", function()
         max_width = 50,
         max_height = 18,
         alignment = "center",
+        fit = "contain",
+        fit_modes = { "contain", "cover", "stretch" },
       },
       audio = {
         enabled = true,
@@ -215,12 +217,19 @@ describe("media", function()
     assert.truthy(plan.images[1].error:find("outside", 1, true))
   end)
 
-  it("renders and clears validated images through optional image.nvim", function()
+  it("renders with trustworthy dimensions and clears images through optional image.nvim", function()
     local rendered = 0
     local cleared = 0
     local received
+    local dimensions_at_render
     local image_object = {
-      render = function() rendered = rendered + 1 end,
+      image_width = 4352,
+      image_height = 1,
+      source_format = "webp",
+      render = function(self)
+        rendered = rendered + 1
+        dimensions_at_render = { self.image_width, self.image_height }
+      end,
       clear = function() cleared = cleared + 1 end,
     }
     package.loaded["image"] = {
@@ -229,6 +238,16 @@ describe("media", function()
         return image_object
       end,
     }
+    local original_executable = vim.fn.executable
+    local original_system = vim.system
+    local identify_argv
+    vim.fn.executable = function(command) return command == "magick" and 1 or 0 end
+    vim.system = function(argv)
+      identify_argv = argv
+      return {
+        wait = function() return { code = 0, stdout = "1258 402\n50 46\n" } end,
+      }
+    end
 
     local handles, err = media.render_images({ {
       path = "/tmp/image.png",
@@ -239,12 +258,16 @@ describe("media", function()
       buffer = 9,
       width = 100,
     }, options().images)
+    vim.fn.executable = original_executable
+    vim.system = original_system
     media.clear_images(handles)
     media.clear_images(handles)
 
     assert.equals(1, #handles)
     assert.is_nil(err)
     assert.equals(1, rendered)
+    assert.same({ 1258, 402 }, dimensions_at_render)
+    assert.same({ "magick", "identify", "-format", "%w %h\n", "--", "/tmp/image.png" }, identify_argv)
     assert.equals(2, cleared)
     assert.equals("/tmp/image.png", received.path)
     assert.equals(8, received.opts.window)
@@ -256,6 +279,106 @@ describe("media", function()
     assert.is_nil(received.opts.max_width)
     assert.is_nil(received.opts.max_height)
     assert.is_true(received.opts.with_virtual_padding)
+  end)
+
+  it("prepares cover and stretch sources with bounded ImageMagick argv", function()
+    local original_executable = vim.fn.executable
+    local original_system = vim.system
+    local commands = {}
+    local outputs = {}
+    vim.fn.executable = function(command) return command == "magick" and 1 or 0 end
+    vim.system = function(argv)
+      commands[#commands + 1] = vim.deepcopy(argv)
+      return {
+        wait = function()
+          local output = argv[#argv]:gsub("^png:", "")
+          outputs[#outputs + 1] = output
+          assert(utils.write_file(output, "transformed"))
+          return { code = 0, stdout = "" }
+        end,
+      }
+    end
+
+    local rendered_paths = {}
+    package.loaded["image"] = {
+      from_file = function(path)
+        rendered_paths[#rendered_paths + 1] = path
+        return {
+          source_format = "png",
+          render = function() end,
+          clear = function() end,
+        }
+      end,
+    }
+    local source = write("assets/fit.png", "source")
+    local image_options = options().images
+    media.render_images({ { path = source, row = 1, fit_mode = "cover" } }, {
+      window = 8,
+      buffer = 9,
+      width = 100,
+    }, image_options)
+    media.render_images({ { path = source, row = 1, fit_mode = "stretch" } }, {
+      window = 8,
+      buffer = 9,
+      width = 100,
+    }, image_options)
+
+    vim.fn.executable = original_executable
+    vim.system = original_system
+    for _, output in ipairs(outputs) do os.remove(output) end
+    for _, output in ipairs(rendered_paths) do os.remove(output) end
+
+    assert.equals(2, #commands)
+    assert.truthy(vim.tbl_contains(commands[1], "400x288^"))
+    assert.truthy(vim.tbl_contains(commands[1], "-gravity"))
+    assert.truthy(vim.tbl_contains(commands[1], "-extent"))
+    assert.truthy(vim.tbl_contains(commands[2], "400x288!"))
+    assert.not_equals(source, rendered_paths[1])
+    assert.not_equals(source, rendered_paths[2])
+  end)
+
+  it("keeps image.nvim dimensions when the legacy probe times out", function()
+    local dimensions_at_render
+    local image_object = {
+      image_width = 4352,
+      image_height = 1,
+      source_format = "webp",
+      render = function(self)
+        dimensions_at_render = { self.image_width, self.image_height }
+      end,
+      clear = function() end,
+    }
+    package.loaded["image"] = {
+      from_file = function() return image_object end,
+    }
+
+    local original_executable = vim.fn.executable
+    local original_system = vim.system
+    local original_jobstart = vim.fn.jobstart
+    local original_jobwait = vim.fn.jobwait
+    local original_jobstop = vim.fn.jobstop
+    local stopped
+    vim.fn.executable = function(command) return command == "magick" and 1 or 0 end
+    vim.system = nil
+    vim.fn.jobstart = function() return 42 end
+    vim.fn.jobwait = function() return { -1 } end
+    vim.fn.jobstop = function(job) stopped = job end
+
+    local handles = media.render_images({ { path = "/tmp/timeout.webp", row = 1 } }, {
+      window = 8,
+      buffer = 9,
+      width = 100,
+    }, options().images)
+
+    vim.fn.executable = original_executable
+    vim.system = original_system
+    vim.fn.jobstart = original_jobstart
+    vim.fn.jobwait = original_jobwait
+    vim.fn.jobstop = original_jobstop
+
+    assert.equals(1, #handles)
+    assert.equals(42, stopped)
+    assert.same({ 4352, 1 }, dimensions_at_render)
   end)
 
   it("passes odd audio filenames as one argv element and stops playback", function()

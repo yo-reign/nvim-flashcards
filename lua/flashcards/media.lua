@@ -318,6 +318,135 @@ function M.extract(content, card_file_path, directories, options)
   return plan
 end
 
+local dimension_cache = {}
+
+local function dimension_stamp(path)
+  local uv = vim.uv or vim.loop
+  local stat = uv.fs_stat(path)
+  if not stat then return "missing" end
+  local mtime = stat.mtime or {}
+  return table.concat({ stat.size or 0, mtime.sec or 0, mtime.nsec or 0 }, ":")
+end
+
+local function run_command(argv)
+  if not argv then return nil end
+  if vim.system then
+    local ok, result = pcall(function()
+      return vim.system(argv, { text = true }):wait(3000)
+    end)
+    if ok and result and result.code == 0 then return result.stdout or "" end
+    return nil
+  end
+
+  local output = {}
+  local job = vim.fn.jobstart(argv, {
+    stdout_buffered = true,
+    on_stdout = function(_, data)
+      vim.list_extend(output, data or {})
+    end,
+  })
+  if job <= 0 then return nil end
+  local status = vim.fn.jobwait({ job }, 3000)[1]
+  if status == -1 then vim.fn.jobstop(job) end
+  if status ~= 0 then return nil end
+  return table.concat(output, "\n")
+end
+
+local function probe_image_dimensions(path)
+  local stamp = dimension_stamp(path)
+  local cached = dimension_cache[path]
+  if cached and cached.stamp == stamp then
+    return cached.dimensions
+  end
+
+  local argv
+  if vim.fn.executable("magick") == 1 then
+    argv = { "magick", "identify", "-format", "%w %h\n", "--", path }
+  elseif vim.fn.executable("identify") == 1 then
+    argv = { "identify", "-format", "%w %h\n", "--", path }
+  end
+
+  local first_line = tostring(run_command(argv) or ""):match("^%s*([^\r\n]+)") or ""
+  local width, height = first_line:match("^(%d+)%s+(%d+)%s*$")
+  width, height = tonumber(width), tonumber(height)
+  local dimensions
+  if width and height and width > 0 and height > 0 then
+    dimensions = { width = width, height = height }
+  end
+  dimension_cache[path] = { stamp = stamp, dimensions = dimensions }
+  return dimensions
+end
+
+local function terminal_pixel_box(geometry)
+  local cell_width, cell_height = 8, 16
+  local ok, image_utils = pcall(require, "image/utils")
+  local size = ok and image_utils.term and image_utils.term.get_size() or nil
+  if size and size.cell_width and size.cell_width > 0 then cell_width = size.cell_width end
+  if size and size.cell_height and size.cell_height > 0 then cell_height = size.cell_height end
+  return math.max(1, math.floor(geometry.width * cell_width + 0.5)),
+    math.max(1, math.floor(geometry.height * cell_height + 0.5))
+end
+
+local function fit_cache_path(path, mode, width, height)
+  local directory = vim.fn.stdpath("cache") .. "/nvim-flashcards/media-fit"
+  vim.fn.mkdir(directory, "p")
+  local key = vim.fn.sha256(table.concat({
+    path,
+    dimension_stamp(path),
+    mode,
+    tostring(width),
+    tostring(height),
+  }, "\0"))
+  return directory .. "/" .. key .. ".png"
+end
+
+local function prepare_fit_source(path, mode, geometry)
+  if mode == "contain" then return path end
+
+  local command
+  if vim.fn.executable("magick") == 1 then
+    command = { "magick" }
+  elseif vim.fn.executable("convert") == 1 then
+    command = { "convert" }
+  else
+    return path, "ImageMagick is required for " .. mode .. " image fit"
+  end
+
+  local width, height = terminal_pixel_box(geometry)
+  local output = fit_cache_path(path, mode, width, height)
+  local uv = vim.uv or vim.loop
+  if uv.fs_stat(output) then return output end
+  local temporary = string.format("%s.%d.tmp.png", output, uv.os_getpid())
+
+  local source = path .. "[0]"
+  local size = string.format("%dx%d", width, height)
+  command[#command + 1] = source
+  command[#command + 1] = "-resize"
+  command[#command + 1] = size .. (mode == "cover" and "^" or "!")
+  if mode == "cover" then
+    command[#command + 1] = "-gravity"
+    command[#command + 1] = "center"
+    command[#command + 1] = "-extent"
+    command[#command + 1] = size
+  end
+  command[#command + 1] = "png:" .. temporary
+
+  if run_command(command) == nil or not uv.fs_stat(temporary) then
+    os.remove(temporary)
+    return path, "Unable to prepare " .. mode .. " image fit"
+  end
+  if not uv.fs_stat(output) then
+    local renamed = os.rename(temporary, output)
+    if not renamed then
+      os.remove(temporary)
+      return path, "Unable to cache " .. mode .. " image fit"
+    end
+  else
+    os.remove(temporary)
+  end
+  return output
+end
+
 local function image_geometry(context, options)
   local padding = 2
   local window_width = context.width
@@ -356,9 +485,14 @@ function M.render_images(images, context, options)
 
   local geometry = image_geometry(context, options)
   local handles = {}
+  local first_error
   for _, item in ipairs(images) do
     if item.path then
-      local created, image_or_error = pcall(image_api.from_file, item.path, {
+      local fit_mode = item.fit_mode or options.fit or "contain"
+      local render_path, fit_error = prepare_fit_source(item.path, fit_mode, geometry)
+      local effective_fit = render_path == item.path and "contain" or fit_mode
+      first_error = first_error or fit_error
+      local created, image_or_error = pcall(image_api.from_file, render_path, {
         window = context.window,
         buffer = context.buffer,
         namespace = "nvim-flashcards",
@@ -370,6 +504,18 @@ function M.render_images(images, context, options)
         height = geometry.height,
       })
       if created and image_or_error then
+        -- image.nvim's built-in WebP dimension parser assumes one specific
+        -- chunk layout and can report values such as 4352x1 for a 1258x402
+        -- image. Trust ImageMagick's argv-based probe when available so its
+        -- aspect-ratio calculation receives the real source dimensions.
+        local source_format = tostring(image_or_error.source_format or ""):lower()
+        if effective_fit == "contain" and source_format == "webp" then
+          local dimensions = probe_image_dimensions(item.path)
+          if dimensions then
+            image_or_error.image_width = dimensions.width
+            image_or_error.image_height = dimensions.height
+          end
+        end
         local rendered = pcall(function() image_or_error:render() end)
         if rendered then
           -- Keep the object even when image.nvim is still transforming it;
@@ -381,7 +527,7 @@ function M.render_images(images, context, options)
       end
     end
   end
-  return handles
+  return handles, first_error
 end
 
 --- Clear image.nvim objects idempotently.

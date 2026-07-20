@@ -34,6 +34,8 @@ local state = {
   visible_media = {},
   visible_images = {},
   current_audio = nil,
+  image_fit_card = nil,
+  image_fit_overrides = {},
   media_augroup = nil,
 }
 
@@ -233,7 +235,7 @@ local function clear_media()
   state.current_audio = nil
 end
 
-local function append_media_content(lines, content, card)
+local function append_media_content(lines, content, card, side)
   local plan = media.extract(
     content,
     card.file_path,
@@ -263,6 +265,9 @@ local function append_media_content(lines, content, card)
   end
   for _, image in ipairs(plan.images) do
     image.render_row = render_rows[image.line]
+    image.fit_key = table.concat({ side, image.line, image.target or image.path or "image" }, ":")
+    image.fit_mode = state.image_fit_overrides[image.fit_key]
+      or config.options.media.images.fit
     state.visible_images[#state.visible_images + 1] = image
   end
   return plan
@@ -302,7 +307,7 @@ local function schedule_visible_images()
 
     local width = vim.api.nvim_win_get_width(popup.winid)
     prepare_image_anchor_lines(popup.bufnr, images, width)
-    local handles = media.render_images(images, {
+    local handles, fit_error = media.render_images(images, {
       window = popup.winid,
       buffer = popup.bufnr,
       width = width,
@@ -313,6 +318,9 @@ local function schedule_visible_images()
     end
     for _, handle in ipairs(handles) do
       state.image_handles[#state.image_handles + 1] = handle
+    end
+    if fit_error then
+      vim.notify("Unable to apply card image fit: " .. fit_error, vim.log.levels.WARN)
     end
   end)
 end
@@ -424,6 +432,12 @@ local function render_card()
     render_complete()
     return
   end
+  local fit_card = card.id .. ":" .. tostring(is_reversed)
+  if state.image_fit_card ~= fit_card then
+    state.image_fit_card = fit_card
+    state.image_fit_overrides = {}
+  end
+
   clear_media()
   state.completed = false
   state.waiting_for_repeat = false
@@ -462,7 +476,7 @@ local function render_card()
 
   -- Front media is available with the question. Answer-side content is not
   -- extracted or resolved until the user explicitly reveals the answer.
-  local front_plan = append_media_content(lines, add_language_labels(display_front), card)
+  local front_plan = append_media_content(lines, add_language_labels(display_front), card, "front")
   state.current_audio = front_plan.audio[1]
 
   -- Track when question is shown for elapsed_ms timing
@@ -478,7 +492,7 @@ local function render_card()
 
     -- Back media is resolved only after answer reveal, preventing image/audio
     -- filenames, filesystem probes, and playback from leaking the answer.
-    local back_plan = append_media_content(lines, add_language_labels(display_back), card)
+    local back_plan = append_media_content(lines, add_language_labels(display_back), card, "back")
     state.current_audio = back_plan.audio[1] or state.current_audio
 
     -- Tags
@@ -550,12 +564,13 @@ local function render_card()
 
     table.insert(lines, "")
     table.insert(lines, string.format(
-      "  (Also: n=Wrong, y=Correct, %s=Skip, %s=Undo, %s=Edit, %s=Audio, %s=Open media)",
+      "  (Also: n=Wrong, y=Correct, %s=Skip, %s=Undo, %s=Edit, %s=Audio, %s=Open media, %s=Image fit)",
       keymaps.skip,
       keymaps.undo,
       keymaps.edit,
       keymaps.play_audio,
-      keymaps.open_media
+      keymaps.open_media,
+      keymaps.cycle_image_fit
     ))
   else
     -- Prompt to reveal answer
@@ -568,6 +583,9 @@ local function render_card()
     end
     if #state.visible_media > 0 then
       table.insert(lines, string.format("  Press %s to open media externally", keymaps.open_media))
+    end
+    if #state.visible_images > 0 then
+      table.insert(lines, string.format("  Press %s to cycle image fit", keymaps.cycle_image_fit))
     end
   end
 
@@ -740,6 +758,9 @@ local function setup_keymaps(popup)
   map(keymaps.open_media, function()
     M.open_media()
   end, "Open card media externally")
+  map(keymaps.cycle_image_fit, function()
+    M.cycle_image_fit()
+  end, "Cycle card image fit")
 end
 
 -- ============================================================================
@@ -761,6 +782,8 @@ function M.start(store, tag, start_opts)
   cancel_repeat_timer()
   clear_media()
   state.waiting_for_repeat = false
+  state.image_fit_card = nil
+  state.image_fit_overrides = {}
   start_opts = start_opts or {}
   local fsrs_instance = fsrs.new(config.options.fsrs)
   local opts = {
@@ -895,6 +918,54 @@ function M.open_media()
   if not ok then
     vim.notify("Unable to open card media: " .. tostring(err), vim.log.levels.WARN)
   end
+end
+
+--- Cycle the fit mode for the image under the cursor, or the first visible image.
+--- @return string|nil fit_mode
+function M.cycle_image_fit()
+  if not state.session or state.completed or state.waiting_for_repeat then
+    return nil
+  end
+
+  local selected
+  if state.popup and state.popup.winid and vim.api.nvim_win_is_valid(state.popup.winid) then
+    local cursor_row = vim.api.nvim_win_get_cursor(state.popup.winid)[1] - 1
+    for _, image in ipairs(state.visible_images) do
+      if image.path and (image.row == cursor_row or image.render_row == cursor_row) then
+        selected = image
+        break
+      end
+    end
+  end
+  if not selected then
+    for _, image in ipairs(state.visible_images) do
+      if image.path then
+        selected = image
+        break
+      end
+    end
+  end
+  if not selected then
+    vim.notify("No image is available on the visible card", vim.log.levels.INFO)
+    return nil
+  end
+
+  local modes = config.options.media.images.fit_modes
+  local current = selected.fit_mode or config.options.media.images.fit
+  local current_index = 0
+  for index, mode in ipairs(modes) do
+    if mode == current then
+      current_index = index
+      break
+    end
+  end
+  local next_mode = modes[(current_index % #modes) + 1]
+  state.image_fit_overrides[selected.fit_key] = next_mode
+  local card_shown_at = state.card_shown_at
+  render_card()
+  state.card_shown_at = card_shown_at
+  vim.notify("Image fit: " .. next_mode, vim.log.levels.INFO)
+  return next_mode
 end
 
 --- Format the informational message for a future learning/relearning step.
@@ -1058,6 +1129,8 @@ function M.close()
   state.completed = false
   state.waiting_for_repeat = false
   state.card_shown_at = nil
+  state.image_fit_card = nil
+  state.image_fit_overrides = {}
 end
 
 --- Check whether a review session is currently active.

@@ -428,6 +428,72 @@ describe("review UI", function()
     assert.equals(rendered[2].row + 1, rendered[2].render_row)
   end)
 
+  it("cycles contain, cover, and stretch for the cursor image only", function()
+    vim.schedule = function(callback) callback() end
+    vim.notify = function() end
+    media_mock.extract = function()
+      local first = { kind = "image", label = "one", path = "/tmp/one.png", line = 1 }
+      local second = { kind = "image", label = "two", path = "/tmp/two.png", line = 2 }
+      return {
+        lines = { "[Image: one]", "[Image: two]" },
+        images = { first, second },
+        audio = {},
+        items = { first, second },
+      }
+    end
+    local rendered_modes = {}
+    media_mock.render_images = function(images)
+      local modes = {}
+      for _, image in ipairs(images) do modes[#modes + 1] = image.fit_mode end
+      rendered_modes[#rendered_modes + 1] = modes
+      return {}
+    end
+
+    local card = {
+      id = "fit-cycle",
+      front = "images",
+      back = "answer",
+      file_path = "/tmp/notes/cards.md",
+      tags = {},
+    }
+    local state = module_state()
+    state.completed = false
+    state.waiting_for_repeat = false
+    state.showing_answer = false
+    state.popup = {
+      bufnr = vim.api.nvim_get_current_buf(),
+      winid = vim.api.nvim_get_current_win(),
+    }
+    state.session = {
+      queue = { card },
+      current_idx = 1,
+      start_time = require("flashcards.utils").now(),
+      store = { get_card_state = function() return { status = "new" } end },
+      skip = function() end,
+      current_card = function() return card, false end,
+      preview_intervals = function() return {} end,
+    }
+
+    review.skip()
+    assert.same({ "contain", "contain" }, rendered_modes[#rendered_modes])
+    local card_shown_at = state.card_shown_at
+
+    local second_row = state.visible_images[2].row
+    vim.api.nvim_win_set_cursor(state.popup.winid, { second_row + 1, 0 })
+    assert.equals("cover", review.cycle_image_fit())
+    assert.same({ "contain", "cover" }, rendered_modes[#rendered_modes])
+    assert.equals(card_shown_at, state.card_shown_at)
+    assert.equals("stretch", review.cycle_image_fit())
+    assert.same({ "contain", "stretch" }, rendered_modes[#rendered_modes])
+    assert.equals("contain", review.cycle_image_fit())
+    assert.same({ "contain", "contain" }, rendered_modes[#rendered_modes])
+
+    local first_row = state.visible_images[1].row
+    vim.api.nvim_win_set_cursor(state.popup.winid, { first_row + 1, 0 })
+    assert.equals("cover", review.cycle_image_fit())
+    assert.same({ "cover", "contain" }, rendered_modes[#rendered_modes])
+  end)
+
   it("rejects stale scheduled image rendering after close", function()
     local callbacks = {}
     local rendered = 0
