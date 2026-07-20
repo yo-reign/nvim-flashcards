@@ -41,6 +41,20 @@ A Neovim plugin for markdown-based spaced repetition flashcards using a simplifi
         "nvim-lua/plenary.nvim",
         "MunifTanjim/nui.nvim",
         "nvim-telescope/telescope.nvim",
+        {
+            "3rd/image.nvim",
+            -- magick_cli uses the system ImageMagick executable, so the
+            -- optional Lua `magick` rock build is unnecessary.
+            build = false,
+            opts = {
+                backend = "kitty", -- or "sixel" / "ueberzug"
+                processor = "magick_cli",
+                -- Flashcards uses the direct API and owns float cleanup.
+                integrations = {
+                    markdown = { enabled = false },
+                },
+            },
+        },
     },
     config = function()
         require("flashcards").setup({
@@ -48,6 +62,11 @@ A Neovim plugin for markdown-based spaced repetition flashcards using a simplifi
             -- SQLite is the only supported backend.
             storage = "sqlite",
             db_path = "~/notes/assets/",
+            media = {
+                enabled = true,
+                -- Optional extra roots; scan directories are already allowed.
+                roots = {},
+            },
             fsrs = {
                 target_correctness = 0.85,
             },
@@ -213,20 +232,26 @@ keeps a readable image placeholder and `o` can open the file externally. Audio
 players are auto-detected in this order: `mpv`, `ffplay`, `afplay`, `paplay`.
 Telescope previews remain text/Markdown-only.
 
-For lazy.nvim, image support can be installed alongside the plugin:
+The lazy.nvim installation example above includes `3rd/image.nvim`. Its
+Markdown integration is disabled because nvim-flashcards uses the direct API
+and owns image placement and cleanup inside its floating review window.
+`build = false` skips the unnecessary Lua `magick` rock because `magick_cli`
+uses the system ImageMagick executable. On macOS install the system tools with:
 
-```lua
-{
-    "3rd/image.nvim",
-    opts = {
-        backend = "kitty", -- or "sixel" / "ueberzug"
-        integrations = { markdown = { enabled = false } },
-    },
-}
+```sh
+# Recommended image conversion and audio playback
+brew install imagemagick mpv
+
+# Optional alternative audio player (provides ffplay)
+brew install ffmpeg
+
+# Only if :checkhealth flashcards cannot find the macOS SQLite runtime
+brew install sqlite
 ```
 
-The Markdown integration is disabled above because nvim-flashcards owns image
-placement and cleanup inside its floating review window.
+`mpv` is optional but recommended for consistent audio-format support. Ghostty
+can use the configured Kitty graphics backend directly; the Überzug++ package
+is not needed for that setup.
 
 ### Suspended Cards
 
