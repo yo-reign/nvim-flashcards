@@ -30,6 +30,23 @@ M.defaults = {
     -- false means unlimited. Set a non-negative integer to enforce a daily cap.
     new_cards_per_day = false,
   },
+  media = {
+    enabled = true,
+    -- Extra local roots permitted in addition to configured scan directories.
+    roots = {},
+    images = {
+      enabled = true,
+      extensions = { "png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "svg" },
+      max_width = 50,
+      max_height = 18,
+    },
+    audio = {
+      enabled = true,
+      extensions = { "mp3", "wav", "ogg", "flac", "m4a", "aac", "opus" },
+      -- false auto-detects mpv/ffplay/afplay/paplay; otherwise use an argv prefix list.
+      player = false,
+    },
+  },
   ui = {
     width = 0.7,
     height = 0.6,
@@ -45,6 +62,8 @@ M.defaults = {
       skip = "s",
       undo = "u",
       edit = "e",
+      play_audio = "p",
+      open_media = "o",
     },
     icons = {
       correct = "v",
@@ -86,9 +105,35 @@ function M.setup(opts)
   opts = opts or {}
   M.options = vim.tbl_deep_extend("force", {}, M.defaults, opts)
 
+  -- Lists are configuration values, not maps. Replace defaults rather than
+  -- retaining trailing default entries through tbl_deep_extend's table merge.
+  if type(opts.media) == "table" then
+    if type(opts.media.roots) == "table" then
+      M.options.media.roots = vim.deepcopy(opts.media.roots)
+    end
+    if type(opts.media.images) == "table" and type(opts.media.images.extensions) == "table" then
+      M.options.media.images.extensions = vim.deepcopy(opts.media.images.extensions)
+    end
+    if type(opts.media.audio) == "table" then
+      if type(opts.media.audio.extensions) == "table" then
+        M.options.media.audio.extensions = vim.deepcopy(opts.media.audio.extensions)
+      end
+      if type(opts.media.audio.player) == "table" then
+        M.options.media.audio.player = vim.deepcopy(opts.media.audio.player)
+      end
+    end
+  end
+
   -- Normalize directory paths
   for i, dir in ipairs(M.options.directories) do
     M.options.directories[i] = utils.normalize_path(dir)
+  end
+  if type(M.options.media) == "table" and type(M.options.media.roots) == "table" then
+    for i, root in ipairs(M.options.media.roots) do
+      if type(root) == "string" then
+        M.options.media.roots[i] = utils.normalize_path(root)
+      end
+    end
   end
 
   -- Preserve raw db_path for directory detection, then normalize
@@ -189,6 +234,75 @@ function M.validate()
     return false, "storage must be \"sqlite\"; JSON storage is no longer supported, got: " .. tostring(opts.storage)
   end
 
+  local media = opts.media
+  if type(media) ~= "table" then
+    return false, "media must be a table, got: " .. type(media)
+  end
+  if type(media.enabled) ~= "boolean" then
+    return false, "media.enabled must be a boolean"
+  end
+  local is_list = vim.islist or vim.tbl_islist
+  local function validate_string_list(value, name, allow_empty)
+    if type(value) ~= "table" or not is_list(value) or (not allow_empty and #value == 0) then
+      return false, name .. " must be " .. (allow_empty and "a list" or "a non-empty list") .. " of strings"
+    end
+    for index, entry in ipairs(value) do
+      if type(entry) ~= "string" or entry == "" then
+        return false, string.format("%s[%d] must be a non-empty string", name, index)
+      end
+    end
+    return true
+  end
+
+  local roots_ok, roots_err = validate_string_list(media.roots, "media.roots", true)
+  if not roots_ok then return false, roots_err end
+  for _, section_name in ipairs({ "images", "audio" }) do
+    local section = media[section_name]
+    if type(section) ~= "table" then
+      return false, "media." .. section_name .. " must be a table"
+    end
+    if type(section.enabled) ~= "boolean" then
+      return false, "media." .. section_name .. ".enabled must be a boolean"
+    end
+    local extensions_ok, extensions_err = validate_string_list(
+      section.extensions,
+      "media." .. section_name .. ".extensions",
+      false
+    )
+    if not extensions_ok then return false, extensions_err end
+    for index, extension in ipairs(section.extensions) do
+      if not extension:gsub("^%.", ""):match("^[%w]+$") then
+        return false, string.format(
+          "media.%s.extensions[%d] must be a simple file extension, got: %s",
+          section_name,
+          index,
+          extension
+        )
+      end
+    end
+  end
+  for _, field in ipairs({ "max_width", "max_height" }) do
+    local value = media.images[field]
+    if not is_finite_number(value) or value <= 0 or value % 1 ~= 0 then
+      return false, "media.images." .. field .. " must be a positive integer"
+    end
+  end
+  local player = media.audio.player
+  if player ~= false then
+    local player_ok, player_err = validate_string_list(player, "media.audio.player", false)
+    if not player_ok then return false, player_err end
+  end
+
+  if type(opts.ui) ~= "table" or type(opts.ui.keymaps) ~= "table" then
+    return false, "ui.keymaps must be a table"
+  end
+  for _, name in ipairs({ "play_audio", "open_media" }) do
+    local key = opts.ui.keymaps[name]
+    if type(key) ~= "string" or key == "" then
+      return false, "ui.keymaps." .. name .. " must be a non-empty string"
+    end
+  end
+
   local session = opts.session
   if type(session) ~= "table" then
     return false, "session must be a table, got: " .. type(session)
@@ -213,7 +327,6 @@ function M.validate()
   end
 
   local weights = opts.fsrs.weights
-  local is_list = vim.islist or vim.tbl_islist
   local steps = type(weights) == "table" and weights.learning_steps or nil
   if type(steps) ~= "table" or not is_list(steps) or #steps == 0 then
     return false, "fsrs.weights.learning_steps must be a non-empty list of positive numbers"

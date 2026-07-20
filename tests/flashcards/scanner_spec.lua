@@ -253,6 +253,55 @@ describe("scanner", function()
       assert.not_equals("keepme01", new_id)
     end)
 
+    it("adds media to an existing ID without changing state, reviews, or daily stats", function()
+      local path = tmpfile("Old Q ::: Old A <!-- fc:media001 -->")
+      scanner.scan_file(path, store, "/tmp")
+      store:update_card_state("media001", {
+        status = "review",
+        stability = 8.5,
+        difficulty = 4.2,
+        due_date = utils.now() + 86400,
+        reps = 7,
+      })
+      store:add_review({
+        card_id = "media001",
+        rating = 1,
+        reviewed_at = utils.now(),
+        elapsed_ms = 1234,
+        state_before = "review",
+        state_after = "review",
+      })
+      local state_before = store:get_card_state("media001")
+      local reviews_before = store:get_reviews("media001")
+      local stats_before = store:get_stats()
+
+      -- Simulate upgrading with a populated database from the previous release.
+      store:close()
+      store = Storage.new("sqlite", store_path)
+      store:init()
+      assert.same(state_before, store:get_card_state("media001"))
+      assert.same(reviews_before, store:get_reviews("media001"))
+      assert.same(stats_before, store:get_stats())
+
+      utils.write_file(path, table.concat({
+        ":::card <!-- fc:media001 -->",
+        "![Diagram](assets/diagram.png)",
+        ":-:",
+        "[Listen](audio/answer.mp3)",
+        ":::end #media",
+      }, "\n"))
+      local result = scanner.scan_file(path, store, "/tmp")
+      os.remove(path)
+
+      assert.equals(0, #result.errors)
+      local card = store:get_card("media001")
+      assert.equals("![Diagram](assets/diagram.png)", card.front)
+      assert.equals("[Listen](audio/answer.mp3)", card.back)
+      assert.same(state_before, store:get_card_state("media001"))
+      assert.same(reviews_before, store:get_reviews("media001"))
+      assert.same(stats_before, store:get_stats())
+    end)
+
     it("preserves review state for existing card IDs", function()
       -- First: upsert a card and give it some state
       store:upsert_card({

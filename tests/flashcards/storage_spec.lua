@@ -92,6 +92,33 @@ describe("storage", function()
       assert.is_true(card.active)
     end)
 
+    it("stores media Markdown in existing text columns without changing the schema", function()
+      local tables_before = store:_query_all(
+        "SELECT name, sql FROM sqlite_master WHERE type = 'table' ORDER BY name"
+      )
+      local version_before = store:_query_one("PRAGMA user_version").user_version
+
+      store:upsert_card({
+        id = "media001",
+        file_path = "biology/cells.md",
+        line = 8,
+        front = "![Cell](assets/cell.png)",
+        back = "[Pronunciation](audio/cell.mp3)",
+        tags = { "biology" },
+      })
+
+      local card = store:get_card("media001")
+      assert.equals("![Cell](assets/cell.png)", card.front)
+      assert.equals("[Pronunciation](audio/cell.mp3)", card.back)
+      assert.same(tables_before, store:_query_all(
+        "SELECT name, sql FROM sqlite_master WHERE type = 'table' ORDER BY name"
+      ))
+      assert.equals(version_before, store:_query_one("PRAGMA user_version").user_version)
+      assert.is_nil(store:_query_one(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'media%'"
+      ))
+    end)
+
     it("normalizes leading source refs on upsert", function()
       store:upsert_card({
         id = "3kuxvz1f",

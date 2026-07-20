@@ -263,6 +263,18 @@ describe("parser", function()
       assert.equals("real", cards[1].front)
     end)
 
+    it("preserves standard Markdown media references with trailing tags and ID", function()
+      local content = "![Diagram](assets/cell.png) ::: [Listen](audio/cell.mp3) #biology <!-- fc:media001 -->"
+      local cards, errors = parser.parse("test.md", content, "")
+
+      assert.equals(0, #errors)
+      assert.equals(1, #cards)
+      assert.equals("![Diagram](assets/cell.png)", cards[1].front)
+      assert.equals("[Listen](audio/cell.mp3)", cards[1].back)
+      assert.same({ "biology" }, cards[1].tags)
+      assert.equals("media001", cards[1].id)
+    end)
+
     it("defaults id to nil and note to nil when absent", function()
       local cards, errors = parser.parse("test.md", "Q ::: A", "")
       assert.equals(0, #errors)
@@ -292,6 +304,27 @@ describe("parser", function()
       assert.equals("What is recursion?", cards[1].front)
       assert.equals("A function that calls itself.", cards[1].back)
       assert.is_false(cards[1].reversible)
+    end)
+
+    it("preserves fenced image and audio Markdown verbatim", function()
+      local content = table.concat({
+        ":::card <!-- fc:media002 -->",
+        "Identify this structure:",
+        "",
+        "![Plant cell](assets/plant-cell.png)",
+        ":-:",
+        "A chloroplast.",
+        "",
+        "[Pronunciation](<audio/plant cell.mp3>)",
+        ":::end #biology",
+      }, "\n")
+      local cards, errors = parser.parse("notes/biology.md", content, "")
+
+      assert.equals(0, #errors)
+      assert.equals(1, #cards)
+      assert.equals("Identify this structure:\n\n![Plant cell](assets/plant-cell.png)", cards[1].front)
+      assert.equals("A chloroplast.\n\n[Pronunciation](<audio/plant cell.mp3>)", cards[1].back)
+      assert.equals("media002", cards[1].id)
     end)
 
     it("parses reversible :?:card ... :-: ... :?:end", function()

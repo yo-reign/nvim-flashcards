@@ -14,6 +14,7 @@ This plugin replaces Anki with a native Neovim experience. Cards are defined inl
 4. **Multi-line support** - Code blocks, lists, and complex formatting preserved
 5. **Telescope integration** - Search, filter, and browse cards
 6. **LSP/Treesitter highlighting** - Full syntax highlighting in review UI
+7. **Local media** - Optional inline images and controlled audio playback from Markdown cards
 
 ## Architecture
 
@@ -27,6 +28,7 @@ nvim-flashcards/
 │       ├── scanner.lua           # Directory walking + ID write-back
 │       ├── fsrs.lua              # FSRS algorithm implementation
 │       ├── scheduler.lua         # Review scheduling/session logic
+│       ├── media.lua             # Local media extraction, resolution, rendering/playback
 │       ├── storage/
 │       │   ├── init.lua          # Storage factory
 │       │   └── sqlite.lua        # SQLite storage backend
@@ -53,6 +55,8 @@ nvim-flashcards/
 | `MunifTanjim/nui.nvim` | Floating review/stats UI | Yes |
 | `nvim-telescope/telescope.nvim` | Browse/search/tag pickers | Yes |
 | `nvim-treesitter/nvim-treesitter` | Markdown + code block highlighting in UI | Recommended |
+| `3rd/image.nvim` + ImageMagick/backend | Inline review images | Optional |
+| `mpv` / `ffplay` / platform player | Controlled review audio | Optional |
 | `libsqlite3` | Durable SQL persistence via LuaJIT FFI | Yes |
 
 ## Card Syntax

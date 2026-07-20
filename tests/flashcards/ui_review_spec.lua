@@ -2,9 +2,12 @@ describe("review UI", function()
   local review
   local original_notify
   local original_schedule_wrap
+  local original_schedule
   local uv
   local original_new_timer
   local timers
+  local media_mock
+  local popup_instance
 
   local function module_state()
     for index = 1, 20 do
@@ -17,7 +20,19 @@ describe("review UI", function()
 
   before_each(function()
     package.loaded["flashcards.ui.review"] = nil
-    package.loaded["nui.popup"] = function() return {} end
+    popup_instance = nil
+    package.loaded["nui.popup"] = function() return popup_instance or {} end
+    media_mock = {
+      extract = function(content)
+        return { lines = require("flashcards.utils").lines(content), images = {}, audio = {}, items = {} }
+      end,
+      render_images = function() return {} end,
+      clear_images = function() end,
+      play_audio = function() return nil, "unavailable" end,
+      stop_audio = function() end,
+      open_external = function() return false, "unavailable" end,
+    }
+    package.loaded["flashcards.media"] = media_mock
     package.loaded["flashcards.ui.components"] = {
       format_duration = function() return "0s" end,
       percentage = function(value) return string.format("%.0f%%", value * 100) end,
@@ -25,6 +40,7 @@ describe("review UI", function()
     require("flashcards.config").setup({ directories = { "/tmp/notes" } })
     original_notify = vim.notify
     original_schedule_wrap = vim.schedule_wrap
+    original_schedule = vim.schedule
     vim.schedule_wrap = function(callback) return callback end
     uv = vim.uv or vim.loop
     original_new_timer = uv.new_timer
@@ -48,8 +64,10 @@ describe("review UI", function()
   after_each(function()
     vim.notify = original_notify
     vim.schedule_wrap = original_schedule_wrap
+    vim.schedule = original_schedule
     uv.new_timer = original_new_timer
     package.loaded["flashcards.ui.review"] = nil
+    package.loaded["flashcards.media"] = nil
     package.loaded["flashcards.ui.components"] = nil
     package.loaded["nui.popup"] = nil
   end)
@@ -105,6 +123,248 @@ describe("review UI", function()
       notified.message
     )
     assert.equals(vim.log.levels.INFO, notified.level)
+  end)
+
+  it("does not inspect answer-side media before reveal", function()
+    local calls = {}
+    media_mock.extract = function(content)
+      calls[#calls + 1] = content
+      local audio = {
+        kind = "audio",
+        label = content,
+        path = "/tmp/" .. content .. ".mp3",
+        line = 1,
+      }
+      return { lines = { content }, images = {}, audio = { audio }, items = { audio } }
+    end
+
+    local card = {
+      id = "media1",
+      front = "question-audio",
+      back = "answer-audio",
+      file_path = "/tmp/notes/cards.md",
+      tags = {},
+      reversible = false,
+    }
+    local state = module_state()
+    state.completed = false
+    state.waiting_for_repeat = false
+    state.showing_answer = false
+    state.popup = { bufnr = vim.api.nvim_get_current_buf() }
+    state.session = {
+      queue = { card },
+      current_idx = 1,
+      start_time = require("flashcards.utils").now(),
+      store = { get_card_state = function() return { status = "new" } end },
+      skip = function() end,
+      current_card = function() return card, false end,
+      preview_intervals = function()
+        return {
+          [0] = { days = 1 / 1440, formatted = "1m" },
+          [1] = { days = 10 / 1440, formatted = "10m" },
+        }
+      end,
+    }
+
+    review.skip()
+    assert.same({ "question-audio" }, calls)
+    assert.equals("question-audio", state.current_audio.label)
+
+    review.show_answer()
+    assert.same({ "question-audio", "question-audio", "answer-audio" }, calls)
+    assert.equals("answer-audio", state.current_audio.label)
+  end)
+
+  it("applies reversible orientation before selecting visible media", function()
+    local calls = {}
+    media_mock.extract = function(content)
+      calls[#calls + 1] = content
+      return { lines = { content }, images = {}, audio = {}, items = {} }
+    end
+    local card = {
+      id = "reverse-media",
+      front = "original-front",
+      back = "original-back",
+      file_path = "/tmp/notes/cards.md",
+      tags = {},
+      reversible = true,
+    }
+    local state = module_state()
+    state.completed = false
+    state.waiting_for_repeat = false
+    state.showing_answer = false
+    state.popup = { bufnr = vim.api.nvim_get_current_buf() }
+    state.session = {
+      queue = { card },
+      current_idx = 1,
+      start_time = require("flashcards.utils").now(),
+      store = { get_card_state = function() return { status = "new" } end },
+      skip = function() end,
+      current_card = function() return card, true end,
+      preview_intervals = function()
+        return {
+          [0] = { days = 1 / 1440, formatted = "1m" },
+          [1] = { days = 10 / 1440, formatted = "10m" },
+        }
+      end,
+    }
+
+    review.skip()
+    assert.same({ "original-back" }, calls)
+    review.show_answer()
+    assert.same({ "original-back", "original-back", "original-front" }, calls)
+  end)
+
+  it("clears existing image handles when revealing the answer", function()
+    local old_image = {}
+    local cleared = false
+    media_mock.clear_images = function(handles)
+      if handles[1] == old_image then cleared = true end
+    end
+    local card = {
+      id = "clear-image",
+      front = "question",
+      back = "answer",
+      file_path = "/tmp/notes/cards.md",
+      tags = {},
+    }
+    local state = module_state()
+    state.completed = false
+    state.waiting_for_repeat = false
+    state.showing_answer = false
+    state.image_handles = { old_image }
+    state.popup = { bufnr = vim.api.nvim_get_current_buf() }
+    state.session = {
+      queue = { card },
+      current_idx = 1,
+      start_time = require("flashcards.utils").now(),
+      store = { get_card_state = function() return { status = "new" } end },
+      current_card = function() return card, false end,
+      preview_intervals = function()
+        return {
+          [0] = { days = 1 / 1440, formatted = "1m" },
+          [1] = { days = 10 / 1440, formatted = "10m" },
+        }
+      end,
+    }
+
+    review.show_answer()
+    assert.is_true(cleared)
+  end)
+
+  it("replaces audio playback and stops it when the review closes", function()
+    local next_job = 40
+    local stopped = {}
+    local exits = {}
+    media_mock.play_audio = function(_, _, on_exit)
+      next_job = next_job + 1
+      exits[next_job] = on_exit
+      return next_job
+    end
+    media_mock.stop_audio = function(job_id)
+      if job_id then stopped[#stopped + 1] = job_id end
+    end
+
+    local state = module_state()
+    state.completed = false
+    state.waiting_for_repeat = false
+    state.current_audio = { path = "/tmp/sound.mp3" }
+    state.session = {
+      clear_pending_repeats = function() end,
+      summary = function() return { reviewed = 0 } end,
+    }
+
+    review.play_audio()
+    review.play_audio()
+    exits[41](41, 1)
+    assert.equals(42, state.audio_job)
+    review.close()
+    exits[42](42, 1)
+
+    assert.same({ 41, 42 }, stopped)
+    assert.is_false(review.is_active())
+  end)
+
+  it("removes review lifecycle autocmds on every close", function()
+    local card = {
+      id = "lifecycle",
+      front = "question",
+      back = "answer",
+      file_path = "/tmp/notes/cards.md",
+      tags = {},
+      state = { status = "new" },
+    }
+    local store = {
+      get_due_cards = function() return { card }, {} end,
+      get_card_state = function() return { status = "new" } end,
+    }
+
+    for iteration = 1, 2 do
+      popup_instance = {
+        bufnr = vim.api.nvim_get_current_buf(),
+        winid = vim.api.nvim_get_current_win(),
+        mount = function() end,
+        unmount = function() end,
+      }
+      review.start(store)
+      local autocmds = vim.api.nvim_get_autocmds({ group = "FlashcardsReviewMedia" })
+      assert.equals(2, #autocmds)
+      if iteration == 1 then
+        review.close()
+      else
+        vim.api.nvim_exec_autocmds("WinClosed", { pattern = tostring(popup_instance.winid) })
+        assert.is_false(review.is_active())
+      end
+      local group_exists = pcall(vim.api.nvim_get_autocmds, { group = "FlashcardsReviewMedia" })
+      assert.is_false(group_exists)
+    end
+  end)
+
+  it("rejects stale scheduled image rendering after close", function()
+    local callbacks = {}
+    local rendered = 0
+    vim.schedule = function(callback) callbacks[#callbacks + 1] = callback end
+    local image = { kind = "image", label = "diagram", path = "/tmp/diagram.png", line = 1 }
+    media_mock.extract = function()
+      return { lines = { "[Image: diagram]" }, images = { image }, audio = {}, items = { image } }
+    end
+    media_mock.render_images = function()
+      rendered = rendered + 1
+      return {}
+    end
+
+    local card = {
+      id = "image1",
+      front = "image",
+      back = "answer",
+      file_path = "/tmp/notes/cards.md",
+      tags = {},
+    }
+    local state = module_state()
+    state.completed = false
+    state.waiting_for_repeat = false
+    state.showing_answer = false
+    state.popup = {
+      bufnr = vim.api.nvim_get_current_buf(),
+      winid = vim.api.nvim_get_current_win(),
+      unmount = function() end,
+    }
+    state.session = {
+      queue = { card },
+      current_idx = 1,
+      start_time = require("flashcards.utils").now(),
+      store = { get_card_state = function() return { status = "new" } end },
+      skip = function() end,
+      current_card = function() return card, false end,
+      clear_pending_repeats = function() end,
+      summary = function() return { reviewed = 0 } end,
+    }
+
+    review.skip()
+    assert.is_true(#callbacks >= 1)
+    review.close()
+    for _, callback in ipairs(callbacks) do callback() end
+    assert.equals(0, rendered)
   end)
 
   it("waits with a one-shot timer and automatically resumes the same popup", function()

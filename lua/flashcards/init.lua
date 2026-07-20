@@ -210,6 +210,36 @@ function M.health()
     ok("Configuration loaded")
     ok("Storage: " .. config.options.storage)
     ok("Directories: " .. table.concat(config.options.directories, ", "))
+
+    if config.options.media and config.options.media.enabled then
+      local media = require("flashcards.media")
+      local capabilities = media.capabilities(config.options.media)
+      if not config.options.media.images.enabled then
+        ok("Card image rendering disabled")
+      elseif capabilities.image_nvim then
+        ok("Optional image.nvim integration available")
+      else
+        warn("image.nvim not found; card images use placeholders and external-open fallback")
+      end
+
+      if not config.options.media.audio.enabled then
+        ok("Card audio playback disabled")
+      elseif capabilities.audio_player then
+        ok("Card audio player available: " .. capabilities.audio_player)
+      elseif capabilities.requested_audio_player then
+        warn("Configured card audio player is unavailable: " .. capabilities.requested_audio_player)
+      else
+        warn("No mpv/ffplay/afplay/paplay audio player found; use the external-open fallback")
+      end
+
+      if capabilities.external_open then
+        ok("External media opener available")
+      else
+        warn("No external media opener available")
+      end
+    else
+      ok("Card media integration disabled")
+    end
   else
     warn("Configuration not loaded (call setup() first)")
   end

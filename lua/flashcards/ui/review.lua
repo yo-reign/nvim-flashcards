@@ -10,6 +10,7 @@ local config = require("flashcards.config")
 local scheduler = require("flashcards.scheduler")
 local fsrs = require("flashcards.fsrs")
 local utils = require("flashcards.utils")
+local media = require("flashcards.media")
 local components = require("flashcards.ui.components")
 
 -- ============================================================================
@@ -26,6 +27,14 @@ local state = {
   repeat_timer_seq = 0,
   card_shown_at = nil,
   treesitter_seq = 0,
+  media_seq = 0,
+  audio_seq = 0,
+  image_handles = {},
+  audio_job = nil,
+  visible_media = {},
+  visible_images = {},
+  current_audio = nil,
+  media_augroup = nil,
 }
 
 -- ============================================================================
@@ -196,6 +205,87 @@ local function apply_highlights(bufnr, lines)
 end
 
 -- ============================================================================
+-- Review media lifecycle
+-- ============================================================================
+
+local function clear_media_autocmds()
+  local group = state.media_augroup
+  state.media_augroup = nil
+  if group then
+    pcall(vim.api.nvim_del_augroup_by_id, group)
+  end
+end
+
+local function stop_audio()
+  state.audio_seq = state.audio_seq + 1
+  local job_id = state.audio_job
+  state.audio_job = nil
+  media.stop_audio(job_id)
+end
+
+local function clear_media()
+  state.media_seq = state.media_seq + 1
+  stop_audio()
+  media.clear_images(state.image_handles)
+  state.image_handles = {}
+  state.visible_media = {}
+  state.visible_images = {}
+  state.current_audio = nil
+end
+
+local function append_media_content(lines, content, card)
+  local plan = media.extract(
+    content,
+    card.file_path,
+    config.options.directories,
+    config.options.media
+  )
+  local first_row = #lines
+  for _, line in ipairs(plan.lines) do
+    lines[#lines + 1] = "  " .. line
+  end
+  for _, item in ipairs(plan.items) do
+    item.row = first_row + item.line - 1
+    state.visible_media[#state.visible_media + 1] = item
+  end
+  for _, image in ipairs(plan.images) do
+    image.row = first_row + image.line - 1
+    state.visible_images[#state.visible_images + 1] = image
+  end
+  return plan
+end
+
+local function schedule_visible_images()
+  if #state.visible_images == 0 or not state.popup then
+    return
+  end
+  local sequence = state.media_seq
+  local popup = state.popup
+  local images = vim.deepcopy(state.visible_images)
+  vim.schedule(function()
+    if sequence ~= state.media_seq or state.popup ~= popup then
+      return
+    end
+    if not popup.winid or not vim.api.nvim_win_is_valid(popup.winid)
+      or not vim.api.nvim_buf_is_valid(popup.bufnr) then
+      return
+    end
+
+    local handles = media.render_images(images, {
+      window = popup.winid,
+      buffer = popup.bufnr,
+    }, config.options.media.images)
+    if sequence ~= state.media_seq or state.popup ~= popup then
+      media.clear_images(handles)
+      return
+    end
+    for _, handle in ipairs(handles) do
+      state.image_handles[#state.image_handles + 1] = handle
+    end
+  end)
+end
+
+-- ============================================================================
 -- Card Rendering
 -- ============================================================================
 
@@ -205,6 +295,7 @@ local function render_complete()
     return
   end
 
+  clear_media()
   state.completed = true
   state.showing_answer = false
   state.card_shown_at = nil
@@ -260,6 +351,7 @@ local function render_waiting()
     return
   end
 
+  clear_media()
   state.completed = false
   state.waiting_for_repeat = true
   state.showing_answer = false
@@ -300,6 +392,7 @@ local function render_card()
     render_complete()
     return
   end
+  clear_media()
   state.completed = false
   state.waiting_for_repeat = false
 
@@ -335,11 +428,10 @@ local function render_card()
   table.insert(lines, header)
   table.insert(lines, "")
 
-  -- Front content with language labels
-  local front_with_labels = add_language_labels(display_front)
-  for _, line in ipairs(utils.lines(front_with_labels)) do
-    table.insert(lines, "  " .. line)
-  end
+  -- Front media is available with the question. Answer-side content is not
+  -- extracted or resolved until the user explicitly reveals the answer.
+  local front_plan = append_media_content(lines, add_language_labels(display_front), card)
+  state.current_audio = front_plan.audio[1]
 
   -- Track when question is shown for elapsed_ms timing
   if not state.showing_answer then
@@ -352,11 +444,10 @@ local function render_card()
     table.insert(lines, "  " .. string.rep("\u{2500}", 50))
     table.insert(lines, "")
 
-    -- Back content with language labels
-    local back_with_labels = add_language_labels(display_back)
-    for _, line in ipairs(utils.lines(back_with_labels)) do
-      table.insert(lines, "  " .. line)
-    end
+    -- Back media is resolved only after answer reveal, preventing image/audio
+    -- filenames, filesystem probes, and playback from leaking the answer.
+    local back_plan = append_media_content(lines, add_language_labels(display_back), card)
+    state.current_audio = back_plan.audio[1] or state.current_audio
 
     -- Tags
     if card.tags and #card.tags > 0 then
@@ -426,19 +517,33 @@ local function render_card()
     }
 
     table.insert(lines, "")
-    table.insert(lines, string.format("  (Also: n=Wrong, y=Correct, %s=Skip, %s=Undo, %s=Edit)", keymaps.skip, keymaps.undo, keymaps.edit))
+    table.insert(lines, string.format(
+      "  (Also: n=Wrong, y=Correct, %s=Skip, %s=Undo, %s=Edit, %s=Audio, %s=Open media)",
+      keymaps.skip,
+      keymaps.undo,
+      keymaps.edit,
+      keymaps.play_audio,
+      keymaps.open_media
+    ))
   else
     -- Prompt to reveal answer
     table.insert(lines, "")
     table.insert(lines, "")
     local show_key = keymaps.show_answer or "<Space>"
     table.insert(lines, string.format("  Press %s to show answer", show_key))
+    if state.current_audio then
+      table.insert(lines, string.format("  Press %s to play audio", keymaps.play_audio))
+    end
+    if #state.visible_media > 0 then
+      table.insert(lines, string.format("  Press %s to open media externally", keymaps.open_media))
+    end
   end
 
   vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
   vim.bo[bufnr].modifiable = false
   apply_highlights(bufnr, lines)
   refresh_markdown_highlighting(bufnr)
+  schedule_visible_images()
 end
 
 -- ============================================================================
@@ -597,6 +702,12 @@ local function setup_keymaps(popup)
   map(keymaps.edit, function()
     M.edit_card()
   end, "Edit card source")
+  map(keymaps.play_audio, function()
+    M.play_audio()
+  end, "Play card audio")
+  map(keymaps.open_media, function()
+    M.open_media()
+  end, "Open card media externally")
 end
 
 -- ============================================================================
@@ -616,6 +727,7 @@ function M.start(store, tag, start_opts)
   end
 
   cancel_repeat_timer()
+  clear_media()
   state.waiting_for_repeat = false
   start_opts = start_opts or {}
   local fsrs_instance = fsrs.new(config.options.fsrs)
@@ -644,6 +756,31 @@ function M.start(store, tag, start_opts)
   state.popup:mount()
   setup_keymaps(state.popup)
 
+  local popup = state.popup
+  clear_media_autocmds()
+  state.media_augroup = vim.api.nvim_create_augroup("FlashcardsReviewMedia", { clear = true })
+  if popup.winid then
+    vim.api.nvim_create_autocmd("WinClosed", {
+      group = state.media_augroup,
+      pattern = tostring(popup.winid),
+      once = true,
+      callback = function()
+        if state.popup == popup then
+          M.close()
+        end
+      end,
+    })
+  end
+  vim.api.nvim_create_autocmd("VimLeavePre", {
+    group = state.media_augroup,
+    once = true,
+    callback = function()
+      if state.popup == popup then
+        clear_media()
+      end
+    end,
+  })
+
   state.showing_answer = false
   state.completed = false
   state.session:next_card()
@@ -659,6 +796,72 @@ function M.show_answer()
   if not state.showing_answer then
     state.showing_answer = true
     render_card()
+  end
+end
+
+--- Play the preferred audio reference on the currently visible card side.
+function M.play_audio()
+  if not state.session or state.completed or state.waiting_for_repeat then
+    return
+  end
+  if not state.current_audio then
+    vim.notify("No audio is available on the visible card side", vim.log.levels.INFO)
+    return
+  end
+
+  stop_audio()
+  local sequence = state.audio_seq
+  local job_id, err = media.play_audio(state.current_audio, config.options.media.audio, function(id, exit_code)
+    if sequence == state.audio_seq and state.audio_job == id then
+      state.audio_job = nil
+      if exit_code ~= 0 then
+        vim.notify("Card audio player exited with code " .. tostring(exit_code), vim.log.levels.WARN)
+      end
+    end
+  end)
+  if not job_id then
+    vim.notify("Unable to play card audio: " .. tostring(err), vim.log.levels.WARN)
+    return
+  end
+  state.audio_job = job_id
+end
+
+--- Open the media item under the cursor, or the preferred visible item.
+function M.open_media()
+  if not state.session or state.completed or state.waiting_for_repeat then
+    return
+  end
+
+  local selected = nil
+  if state.popup and state.popup.winid and vim.api.nvim_win_is_valid(state.popup.winid) then
+    local cursor_row = vim.api.nvim_win_get_cursor(state.popup.winid)[1] - 1
+    for _, item in ipairs(state.visible_media) do
+      if item.row == cursor_row then
+        selected = item
+        break
+      end
+    end
+  end
+  if not selected and state.current_audio and state.current_audio.path then
+    selected = state.current_audio
+  end
+  if not selected then
+    for _, item in ipairs(state.visible_media) do
+      if item.path then
+        selected = item
+        break
+      end
+    end
+  end
+  selected = selected or state.visible_media[1]
+  if not selected then
+    vim.notify("No media is available on the visible card", vim.log.levels.INFO)
+    return
+  end
+
+  local ok, err = media.open_external(selected)
+  if not ok then
+    vim.notify("Unable to open card media: " .. tostring(err), vim.log.levels.WARN)
   end
 end
 
@@ -788,11 +991,13 @@ end
 function M.close()
   state.treesitter_seq = state.treesitter_seq + 1
   cancel_repeat_timer()
+  clear_media()
+  clear_media_autocmds()
 
   local popup = state.popup
   state.popup = nil
   if popup then
-    popup:unmount()
+    pcall(function() popup:unmount() end)
   end
 
   if state.session then

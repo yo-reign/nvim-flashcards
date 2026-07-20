@@ -1,0 +1,395 @@
+--- Local image and audio helpers for flashcard review content.
+--- Media references remain ordinary Markdown stored in card front/back text;
+--- this module only derives a transient render plan at review time.
+--- @module flashcards.media
+local M = {}
+
+local utils = require("flashcards.utils")
+
+local function trim(value)
+  return utils.trim(value or "")
+end
+
+local function extension_set(extensions)
+  local result = {}
+  for _, extension in ipairs(extensions or {}) do
+    result[extension:lower():gsub("^%.", "")] = true
+  end
+  return result
+end
+
+local function target_extension(target)
+  return target:lower():match("%.([%w]+)$")
+end
+
+local function parse_target(raw_target)
+  local expression = trim(raw_target)
+  local target, title
+  if expression:sub(1, 1) == "<" then
+    target, title = expression:match("^<([^>]*)>%s*(.*)$")
+    if not target then
+      return nil, "invalid angle-bracket media path"
+    end
+  else
+    target, title = expression:match("^(%S+)%s*(.*)$")
+  end
+
+  target = trim(target)
+  title = trim(title)
+  if target == "" then
+    return nil, "empty media path"
+  end
+  if title ~= ""
+    and not title:match('^"[^"]*"$')
+    and not title:match("^'[^']*'$")
+    and not title:match("^%([^%)]*%)$") then
+    return nil, "invalid Markdown media title"
+  end
+  return target
+end
+
+local function is_remote_or_special(target)
+  if target:find("\0", 1, true) then
+    return true
+  end
+  -- Keep Windows drive letters local, but reject every URI/data scheme.
+  return target:match("^%a[%w+.-]*:") ~= nil and target:match("^%a:[/\\]") == nil
+end
+
+local function allowed_roots(directories, extra_roots)
+  local roots = {}
+  local seen = {}
+  for _, collection in ipairs({ directories or {}, extra_roots or {} }) do
+    for _, root in ipairs(collection) do
+      local canonical = utils.canonical_path(root)
+      if not seen[canonical] then
+        seen[canonical] = true
+        roots[#roots + 1] = canonical
+      end
+    end
+  end
+  return roots
+end
+
+--- Resolve a local media target relative to the card's Markdown source file.
+--- Both the source file and resolved media must remain inside configured roots.
+--- @param target string Markdown link destination
+--- @param card_file_path string canonical or legacy card source path
+--- @param directories string[] configured flashcard directories
+--- @param extra_roots string[]|nil extra explicitly permitted media roots
+--- @return string|nil absolute_path
+--- @return string|nil error_message
+function M.resolve(target, card_file_path, directories, extra_roots)
+  if type(target) ~= "string" or target == "" then
+    return nil, "empty media path"
+  end
+  if is_remote_or_special(target) then
+    return nil, "remote and special media URLs are not supported"
+  end
+
+  if utils.is_absolute_path(target) then
+    return nil, "media paths must be relative to the card source file"
+  end
+
+  local source_path = utils.resolve_card_path(card_file_path, directories)
+  if not source_path then
+    return nil, "cannot resolve card source file"
+  end
+
+  local source_dir = vim.fn.fnamemodify(source_path, ":h")
+  local canonical = utils.canonical_path(source_dir .. "/" .. target)
+  local inside_allowed_root = false
+  for _, root in ipairs(allowed_roots(directories, extra_roots)) do
+    if utils.is_subpath(canonical, root) then
+      inside_allowed_root = true
+      break
+    end
+  end
+  if not inside_allowed_root then
+    return nil, "media path is outside configured roots"
+  end
+  if vim.fn.filereadable(canonical) ~= 1 or vim.fn.getftype(canonical) ~= "file" then
+    return nil, "media file is missing or unreadable"
+  end
+
+  return canonical
+end
+
+local function placeholder(kind, label, valid)
+  local title = label ~= "" and label or kind
+  if valid then
+    if kind == "audio" then
+      return string.format("[Audio: %s] (press p to play)", title)
+    end
+    return string.format("[Image: %s]", title)
+  end
+  return string.format("[%s unavailable: %s]", kind == "audio" and "Audio" or "Image", title)
+end
+
+local function fence_ticks(line)
+  local ticks = line:match("^%s*(`+)")
+  if ticks and #ticks >= 3 then
+    return #ticks
+  end
+  return nil
+end
+
+--- Extract supported full-line Markdown media references and build placeholders.
+--- Media inside fenced code blocks is left untouched. A destination containing
+--- spaces must use Markdown's `<path with spaces>` form.
+--- @param content string visible card-side Markdown
+--- @param card_file_path string card source path
+--- @param directories string[] configured flashcard directories
+--- @param options table media configuration
+--- @return table plan { lines, images, audio, items }
+function M.extract(content, card_file_path, directories, options)
+  options = options or {}
+  local plan = { lines = {}, images = {}, audio = {}, items = {} }
+  if options.enabled == false then
+    plan.lines = utils.lines(content)
+    return plan
+  end
+
+  local image_options = options.images or {}
+  local audio_options = options.audio or {}
+  local image_extensions = extension_set(image_options.extensions)
+  local audio_extensions = extension_set(audio_options.extensions)
+  local active_fence = 0
+
+  for _, line in ipairs(utils.lines(content)) do
+    local ticks = fence_ticks(line)
+    if ticks then
+      if active_fence == 0 then
+        active_fence = ticks
+      elseif ticks >= active_fence then
+        active_fence = 0
+      end
+      plan.lines[#plan.lines + 1] = line
+    elseif active_fence > 0 then
+      plan.lines[#plan.lines + 1] = line
+    else
+      local kind, label, raw_target
+      local image_label, image_target = line:match("^%s*!%[([^%]]*)%]%((.*)%)%s*$")
+      if image_target then
+        local parsed_target = parse_target(image_target)
+        local extension = parsed_target and target_extension(parsed_target) or nil
+        if image_options.enabled ~= false and extension and image_extensions[extension] then
+          kind, label, raw_target = "image", trim(image_label), image_target
+        end
+      end
+
+      if not kind then
+        local audio_label, audio_target = line:match("^%s*%[([^%]]*)%]%((.*)%)%s*$")
+        if audio_target then
+          local parsed_target = parse_target(audio_target)
+          local extension = parsed_target and target_extension(parsed_target) or nil
+          if audio_options.enabled ~= false and extension and audio_extensions[extension] then
+            kind, label, raw_target = "audio", trim(audio_label), audio_target
+          end
+        end
+      end
+
+      if not kind then
+        plan.lines[#plan.lines + 1] = line
+      else
+        local target, parse_error = parse_target(raw_target)
+        local path, resolve_error
+        if target then
+          path, resolve_error = M.resolve(target, card_file_path, directories, options.roots)
+        end
+        local item = {
+          kind = kind,
+          label = label,
+          target = target,
+          path = path,
+          error = parse_error or resolve_error,
+          line = #plan.lines + 1,
+        }
+        plan.lines[#plan.lines + 1] = placeholder(kind, label ~= "" and label or (target or "media"), path ~= nil)
+        plan.items[#plan.items + 1] = item
+        plan[kind == "image" and "images" or "audio"][#plan[kind == "image" and "images" or "audio"] + 1] = item
+      end
+    end
+  end
+
+  return plan
+end
+
+--- Render validated image records through optional 3rd/image.nvim.
+--- @param images table[] records with absolute path and zero-based row
+--- @param context table { window, buffer }
+--- @param options table image configuration
+--- @return table[] handles image objects that must later be cleared
+--- @return string|nil error_message
+function M.render_images(images, context, options)
+  if not images or #images == 0 or not options or options.enabled == false then
+    return {}
+  end
+  local ok, image_api = pcall(require, "image")
+  if not ok then
+    return {}, "image.nvim is not available"
+  end
+
+  local handles = {}
+  for _, item in ipairs(images) do
+    if item.path then
+      local created, image_or_error = pcall(image_api.from_file, item.path, {
+        window = context.window,
+        buffer = context.buffer,
+        namespace = "nvim-flashcards",
+        inline = true,
+        with_virtual_padding = true,
+        x = 2,
+        y = item.row,
+        max_width = options.max_width,
+        max_height = options.max_height,
+      })
+      if created and image_or_error then
+        local rendered = pcall(function() image_or_error:render() end)
+        if rendered then
+          handles[#handles + 1] = image_or_error
+        else
+          pcall(function() image_or_error:clear() end)
+        end
+      end
+    end
+  end
+  return handles
+end
+
+--- Clear image.nvim objects idempotently.
+--- @param handles table[]|nil
+function M.clear_images(handles)
+  for _, image in ipairs(handles or {}) do
+    pcall(function() image:clear() end)
+  end
+end
+
+local function executable(command)
+  return type(command) == "string" and command ~= "" and vim.fn.executable(command) == 1
+end
+
+--- Return the configured or auto-detected audio argv prefix and display name.
+--- @param options table audio configuration
+--- @return string[]|nil argv_prefix
+--- @return string|nil player_name
+function M.audio_player(options)
+  options = options or {}
+  if type(options.player) == "table" and #options.player > 0 then
+    if executable(options.player[1]) then
+      return vim.deepcopy(options.player), options.player[1]
+    end
+    return nil, options.player[1]
+  end
+
+  local candidates = {
+    { name = "mpv", argv = { "mpv", "--no-video", "--no-terminal", "--really-quiet", "--" } },
+    { name = "ffplay", argv = { "ffplay", "-nodisp", "-autoexit", "-loglevel", "error" } },
+    { name = "afplay", argv = { "afplay" } },
+    { name = "paplay", argv = { "paplay" } },
+  }
+  for _, candidate in ipairs(candidates) do
+    if executable(candidate.argv[1]) then
+      return candidate.argv, candidate.name
+    end
+  end
+  return nil, nil
+end
+
+--- Start one validated audio file without invoking a shell.
+--- @param item table media record
+--- @param options table audio configuration
+--- @param on_exit function|nil receives job_id and exit_code
+--- @return number|nil job_id
+--- @return string|nil error_message
+function M.play_audio(item, options, on_exit)
+  if not item or not item.path then
+    return nil, (item and item.error) or "no playable audio on the visible card side"
+  end
+  local prefix, name = M.audio_player(options)
+  if not prefix then
+    return nil, name and ("configured audio player is unavailable: " .. name) or "no supported audio player found"
+  end
+
+  local argv = vim.deepcopy(prefix)
+  argv[#argv + 1] = item.path
+  local job_id = vim.fn.jobstart(argv, {
+    detach = false,
+    on_exit = function(id, code)
+      if on_exit then
+        on_exit(id, code)
+      end
+    end,
+  })
+  if type(job_id) ~= "number" or job_id <= 0 then
+    return nil, "failed to start audio player"
+  end
+  return job_id
+end
+
+--- Stop a playback job if it is still active.
+--- @param job_id number|nil
+function M.stop_audio(job_id)
+  if type(job_id) == "number" and job_id > 0 then
+    pcall(vim.fn.jobstop, job_id)
+  end
+end
+
+local function fallback_opener()
+  if vim.fn.has("mac") == 1 and executable("open") then
+    return { "open" }
+  end
+  if vim.fn.has("unix") == 1 and executable("xdg-open") then
+    return { "xdg-open" }
+  end
+  return nil
+end
+
+--- Open validated media with the platform handler. This is always explicit;
+--- unavailable audio/image adapters never launch external applications alone.
+--- @param item table media record
+--- @return boolean ok
+--- @return string|nil error_message
+function M.open_external(item)
+  if not item or not item.path then
+    return false, (item and item.error) or "no local media available"
+  end
+
+  if vim.ui and type(vim.ui.open) == "function" then
+    local called, process_or_error, open_error = pcall(vim.ui.open, item.path)
+    if not called then
+      return false, tostring(process_or_error)
+    end
+    if open_error then
+      return false, tostring(open_error)
+    end
+    return true
+  end
+
+  local argv = fallback_opener()
+  if not argv then
+    return false, "no platform media opener is available"
+  end
+  argv[#argv + 1] = item.path
+  local job_id = vim.fn.jobstart(argv, { detach = true })
+  if type(job_id) ~= "number" or job_id <= 0 then
+    return false, "failed to open media"
+  end
+  return true
+end
+
+--- Return optional runtime capability information for :checkhealth.
+--- @param options table media configuration
+--- @return table
+function M.capabilities(options)
+  local image_ok = pcall(require, "image")
+  local player_argv, player_name = M.audio_player((options and options.audio) or {})
+  return {
+    image_nvim = image_ok,
+    audio_player = player_argv and player_name or nil,
+    requested_audio_player = player_name,
+    external_open = (vim.ui and type(vim.ui.open) == "function") or fallback_opener() ~= nil,
+  }
+end
+
+return M
