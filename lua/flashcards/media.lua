@@ -318,9 +318,30 @@ function M.extract(content, card_file_path, directories, options)
   return plan
 end
 
+local function image_geometry(context, options)
+  local padding = 2
+  local window_width = context.width
+  if not window_width and context.window then
+    local ok, width = pcall(vim.api.nvim_win_get_width, context.window)
+    if ok then window_width = width end
+  end
+  window_width = window_width or (options.max_width + (padding * 2))
+
+  local width = math.max(1, math.min(options.max_width, window_width - (padding * 2)))
+  local height = options.max_height
+  local alignment = options.alignment or "center"
+  local x = padding
+  if alignment == "center" then
+    x = math.max(padding, math.floor((window_width - width) / 2))
+  elseif alignment == "right" then
+    x = math.max(padding, window_width - width - padding)
+  end
+  return { x = x, width = width, height = height }
+end
+
 --- Render validated image records through optional 3rd/image.nvim.
---- @param images table[] records with absolute path and zero-based row
---- @param context table { window, buffer }
+--- @param images table[] records with absolute path and zero-based render row
+--- @param context table { window, buffer, width? }
 --- @param options table image configuration
 --- @return table[] handles image objects that must later be cleared
 --- @return string|nil error_message
@@ -333,6 +354,7 @@ function M.render_images(images, context, options)
     return {}, "image.nvim is not available"
   end
 
+  local geometry = image_geometry(context, options)
   local handles = {}
   for _, item in ipairs(images) do
     if item.path then
@@ -342,14 +364,16 @@ function M.render_images(images, context, options)
         namespace = "nvim-flashcards",
         inline = true,
         with_virtual_padding = true,
-        x = 2,
-        y = item.row,
-        max_width = options.max_width,
-        max_height = options.max_height,
+        x = geometry.x,
+        y = item.render_row or item.row,
+        width = geometry.width,
+        height = geometry.height,
       })
       if created and image_or_error then
         local rendered = pcall(function() image_or_error:render() end)
         if rendered then
+          -- Keep the object even when image.nvim is still transforming it;
+          -- its guarded callback will render later and this handle owns cleanup.
           handles[#handles + 1] = image_or_error
         else
           pcall(function() image_or_error:clear() end)

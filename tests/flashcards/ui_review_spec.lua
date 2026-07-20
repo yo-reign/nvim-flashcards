@@ -320,6 +320,114 @@ describe("review UI", function()
     end
   end)
 
+  it("keeps the fallback caption above a stable padded image anchor", function()
+    vim.schedule = function(callback) callback() end
+    local image = { kind = "image", label = "diagram", path = "/tmp/diagram.png", line = 1 }
+    media_mock.extract = function()
+      return { lines = { "[Image: diagram]" }, images = { image }, audio = {}, items = { image } }
+    end
+
+    local rendered_context
+    local extmark
+    local namespace = vim.api.nvim_create_namespace("FlashcardsImageLayoutTest")
+    media_mock.render_images = function(images, context, options)
+      rendered_context = { images = images, context = context, options = options }
+      local render_row = images[1].render_row
+      local anchor = vim.api.nvim_buf_get_lines(context.buffer, render_row, render_row + 1, false)[1]
+      assert.is_true(vim.fn.strdisplaywidth(anchor) >= context.width)
+      local x = math.floor(context.width / 2)
+      extmark = vim.api.nvim_buf_set_extmark(context.buffer, namespace, render_row, x, {})
+      return { { clear = function() end } }
+    end
+
+    local card = {
+      id = "image-layout",
+      front = "image",
+      back = "answer",
+      file_path = "/tmp/notes/cards.md",
+      tags = {},
+    }
+    local state = module_state()
+    state.completed = false
+    state.waiting_for_repeat = false
+    state.showing_answer = false
+    state.popup = {
+      bufnr = vim.api.nvim_get_current_buf(),
+      winid = vim.api.nvim_get_current_win(),
+    }
+    state.session = {
+      queue = { card },
+      current_idx = 1,
+      start_time = require("flashcards.utils").now(),
+      store = { get_card_state = function() return { status = "new" } end },
+      skip = function() end,
+      current_card = function() return card, false end,
+      preview_intervals = function() return {} end,
+    }
+
+    review.skip()
+
+    assert.equals(vim.api.nvim_win_get_width(state.popup.winid), rendered_context.context.width)
+    assert.equals("center", rendered_context.options.alignment)
+    local visible = state.visible_images[1]
+    assert.equals(visible.row + 1, visible.render_row)
+    local caption = vim.api.nvim_buf_get_lines(state.popup.bufnr, visible.row, visible.row + 1, false)[1]
+    assert.equals("  [Image: diagram]", caption)
+    local mark = vim.api.nvim_buf_get_extmark_by_id(state.popup.bufnr, namespace, extmark, {})
+    assert.same({ visible.render_row, math.floor(rendered_context.context.width / 2) }, mark)
+  end)
+
+  it("allocates independent caption and render rows for multiple images", function()
+    vim.schedule = function(callback) callback() end
+    local first = { kind = "image", label = "one", path = "/tmp/one.png", line = 1 }
+    local second = { kind = "image", label = "two", path = "/tmp/two.png", line = 2 }
+    media_mock.extract = function()
+      return {
+        lines = { "[Image: one]", "[Image: two]" },
+        images = { first, second },
+        audio = {},
+        items = { first, second },
+      }
+    end
+    local rendered
+    media_mock.render_images = function(images)
+      rendered = images
+      return {}
+    end
+
+    local card = {
+      id = "multiple-image-layout",
+      front = "images",
+      back = "answer",
+      file_path = "/tmp/notes/cards.md",
+      tags = {},
+    }
+    local state = module_state()
+    state.completed = false
+    state.waiting_for_repeat = false
+    state.showing_answer = false
+    state.popup = {
+      bufnr = vim.api.nvim_get_current_buf(),
+      winid = vim.api.nvim_get_current_win(),
+    }
+    state.session = {
+      queue = { card },
+      current_idx = 1,
+      start_time = require("flashcards.utils").now(),
+      store = { get_card_state = function() return { status = "new" } end },
+      skip = function() end,
+      current_card = function() return card, false end,
+      preview_intervals = function() return {} end,
+    }
+
+    review.skip()
+
+    assert.equals(2, #rendered)
+    assert.equals(rendered[1].row + 1, rendered[1].render_row)
+    assert.equals(rendered[1].render_row + 1, rendered[2].row)
+    assert.equals(rendered[2].row + 1, rendered[2].render_row)
+  end)
+
   it("rejects stale scheduled image rendering after close", function()
     local callbacks = {}
     local rendered = 0

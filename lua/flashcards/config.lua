@@ -37,8 +37,10 @@ M.defaults = {
     images = {
       enabled = true,
       extensions = { "png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "svg" },
-      max_width = 50,
-      max_height = 18,
+      -- Maximum terminal-cell bounding box used by image.nvim.
+      max_width = 40,
+      max_height = 12,
+      alignment = "center",
     },
     audio = {
       enabled = true,
@@ -286,6 +288,9 @@ function M.validate()
     if not is_finite_number(value) or value <= 0 or value % 1 ~= 0 then
       return false, "media.images." .. field .. " must be a positive integer"
     end
+  end
+  if not vim.tbl_contains({ "left", "center", "right" }, media.images.alignment) then
+    return false, "media.images.alignment must be \"left\", \"center\", or \"right\""
   end
   local player = media.audio.player
   if player ~= false then

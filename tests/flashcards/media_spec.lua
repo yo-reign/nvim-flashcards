@@ -19,6 +19,7 @@ describe("media", function()
         extensions = { "png", "jpg", "svg" },
         max_width = 50,
         max_height = 18,
+        alignment = "center",
       },
       audio = {
         enabled = true,
@@ -229,20 +230,31 @@ describe("media", function()
       end,
     }
 
-    local handles = media.render_images({ { path = "/tmp/image.png", row = 4 } }, {
+    local handles, err = media.render_images({ {
+      path = "/tmp/image.png",
+      row = 4,
+      render_row = 6,
+    } }, {
       window = 8,
       buffer = 9,
+      width = 100,
     }, options().images)
     media.clear_images(handles)
     media.clear_images(handles)
 
     assert.equals(1, #handles)
+    assert.is_nil(err)
     assert.equals(1, rendered)
     assert.equals(2, cleared)
     assert.equals("/tmp/image.png", received.path)
     assert.equals(8, received.opts.window)
     assert.equals(9, received.opts.buffer)
-    assert.equals(4, received.opts.y)
+    assert.equals(25, received.opts.x)
+    assert.equals(6, received.opts.y)
+    assert.equals(50, received.opts.width)
+    assert.equals(18, received.opts.height)
+    assert.is_nil(received.opts.max_width)
+    assert.is_nil(received.opts.max_height)
     assert.is_true(received.opts.with_virtual_padding)
   end)
 

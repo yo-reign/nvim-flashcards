@@ -240,19 +240,48 @@ local function append_media_content(lines, content, card)
     config.options.directories,
     config.options.media
   )
-  local first_row = #lines
-  for _, line in ipairs(plan.lines) do
+  local image_lines = {}
+  for _, image in ipairs(plan.images) do
+    if image.path then image_lines[image.line] = true end
+  end
+
+  local content_rows = {}
+  local render_rows = {}
+  for line_number, line in ipairs(plan.lines) do
+    content_rows[line_number] = #lines
     lines[#lines + 1] = "  " .. line
+    if image_lines[line_number] then
+      -- Keep the label as a caption/fallback and render on its own blank row.
+      -- This prevents transparent images from exposing text underneath them.
+      render_rows[line_number] = #lines
+      lines[#lines + 1] = "  "
+    end
   end
   for _, item in ipairs(plan.items) do
-    item.row = first_row + item.line - 1
+    item.row = content_rows[item.line]
     state.visible_media[#state.visible_media + 1] = item
   end
   for _, image in ipairs(plan.images) do
-    image.row = first_row + image.line - 1
+    image.render_row = render_rows[image.line]
     state.visible_images[#state.visible_images + 1] = image
   end
   return plan
+end
+
+local function prepare_image_anchor_lines(bufnr, images, width)
+  local was_modifiable = vim.bo[bufnr].modifiable
+  vim.bo[bufnr].modifiable = true
+  for _, image in ipairs(images) do
+    local row = image.render_row or image.row
+    local line = vim.api.nvim_buf_get_lines(bufnr, row, row + 1, false)[1]
+    if line then
+      local padding = math.max(0, width - vim.fn.strdisplaywidth(line))
+      if padding > 0 then
+        vim.api.nvim_buf_set_text(bufnr, row, #line, row, #line, { string.rep(" ", padding) })
+      end
+    end
+  end
+  vim.bo[bufnr].modifiable = was_modifiable
 end
 
 local function schedule_visible_images()
@@ -271,9 +300,12 @@ local function schedule_visible_images()
       return
     end
 
+    local width = vim.api.nvim_win_get_width(popup.winid)
+    prepare_image_anchor_lines(popup.bufnr, images, width)
     local handles = media.render_images(images, {
       window = popup.winid,
       buffer = popup.bufnr,
+      width = width,
     }, config.options.media.images)
     if sequence ~= state.media_seq or state.popup ~= popup then
       media.clear_images(handles)

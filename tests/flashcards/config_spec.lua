@@ -19,6 +19,9 @@ describe("config", function()
       assert.is_false(config.options.session.new_cards_per_day)
       assert.is_true(config.options.media.enabled)
       assert.is_true(config.options.media.images.enabled)
+      assert.equals(40, config.options.media.images.max_width)
+      assert.equals(12, config.options.media.images.max_height)
+      assert.equals("center", config.options.media.images.alignment)
       assert.is_true(config.options.media.audio.enabled)
       assert.is_false(config.options.media.audio.player)
       assert.equals("p", config.options.ui.keymaps.play_audio)
@@ -194,6 +197,7 @@ describe("config", function()
         { media = { roots = "assets" }, expected = "media.roots" },
         { media = { images = { extensions = {} } }, expected = "media.images.extensions" },
         { media = { images = { max_width = 0 } }, expected = "media.images.max_width" },
+        { media = { images = { alignment = "middle" } }, expected = "media.images.alignment" },
         { media = { audio = { extensions = { "mp-3" } } }, expected = "media.audio.extensions" },
         { media = { audio = { player = "mpv" } }, expected = "media.audio.player" },
         { media = { audio = { player = {} } }, expected = "media.audio.player" },
